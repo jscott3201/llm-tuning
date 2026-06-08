@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets and local config — never commit
+.env
+.env.*
+*.authkey
+secrets.toml
+
+# uv: lockfiles ARE committed; the venv is not.
+
+# OS / editor noise
+.DS_Store
+.idea/
+.vscode/
+
+# Model weights and caches — never commit
+*.safetensors
+*.gguf
+*.pt
+*.bin
+hf-cache/
+*-hf-cache/
+torchinductor-cache/
+
+# Archives and scratch
+*.zip
+.reference/

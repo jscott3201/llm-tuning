@@ -1,0 +1,90 @@
+{
+  "label": "26B-A4B-c1-b200",
+  "endpoint": "https://<the URL printed by modal deploy serve_26b.py>",
+  "model": "google/gemma-4-26B-A4B-it",
+  "concurrency": 1,
+  "requests": 10,
+  "max_tokens": 256,
+  "timestamp": "2026-05-06T17:41:24.594911+00:00",
+  "wall_time_s": 13.931,
+  "total_output_tokens": 2238,
+  "throughput_tokens_per_s": 160.65,
+  "successful_requests": 10,
+  "failed_requests": 0,
+  "latency_mean_s": 1.393,
+  "latency_p50_s": 1.504,
+  "latency_p95_s": 1.673,
+  "output_tokens_mean": 223.8,
+  "per_request": [
+    {
+      "index": 0,
+      "latency_s": 0.7147525410000526,
+      "output_tokens": 85,
+      "completion_text_len": 463,
+      "error": null
+    },
+    {
+      "index": 1,
+      "latency_s": 1.537372917000539,
+      "output_tokens": 256,
+      "completion_text_len": 820,
+      "error": null
+    },
+    {
+      "index": 2,
+      "latency_s": 1.1171739590008656,
+      "output_tokens": 163,
+      "completion_text_len": 915,
+      "error": null
+    },
+    {
+      "index": 3,
+      "latency_s": 1.5042074590000993,
+      "output_tokens": 256,
+      "completion_text_len": 1086,
+      "error": null
+    },
+    {
+      "index": 4,
+      "latency_s": 1.576341791998857,
+      "output_tokens": 256,
+      "completion_text_len": 1193,
+      "error": null
+    },
+    {
+      "index": 5,
+      "latency_s": 1.5368335830007709,
+      "output_tokens": 256,
+      "completion_text_len": 1270,
+      "error": null
+    },
+    {
+      "index": 6,
+      "latency_s": 1.4998017090001667,
+      "output_tokens": 256,
+      "completion_text_len": 1050,
+      "error": null
+    },
+    {
+      "index": 7,
+      "latency_s": 1.6732244579998223,
+      "output_tokens": 256,
+      "completion_text_len": 1179,
+      "error": null
+    },
+    {
+      "index": 8,
+      "latency_s": 1.2281077909992746,
+      "output_tokens": 198,
+      "completion_text_len": 1094,
+      "error": null
+    },
+    {
+      "index": 9,
+      "latency_s": 1.5427684999995108,
+      "output_tokens": 256,
+      "completion_text_len": 1083,
+      "error": null
+    }
+  ]
+}

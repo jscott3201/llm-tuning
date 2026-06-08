@@ -1,0 +1,40 @@
+{
+  "preset_version": "1.0.0",
+  "base_model_id": "google/gemma-4-E4B-it",
+  "output_repo_id": "your-hf-username/gemma4-e4b-sft",
+  "data": {
+    "corpus_jsonl": "/data/corpus_v1.scrubbed.jsonl",
+    "min_messages": 3,
+    "max_seq_length": 8192
+  },
+  "lora": {
+    "rank": 16,
+    "alpha": 32,
+    "dropout": 0.05,
+    "_target_modules_choice": "Either an explicit list of module-name suffixes (below), or the literal string 'all-linear'. 'all-linear' is Google's canonical Gemma 4 recipe — PEFT regex-matches every linear layer in the language backbone and skips Gemma 4's vision/audio `Gemma4ClippableLinear` wrappers automatically. The explicit list is more transparent about what's being trained but requires the ClippableLinear nn.Linear monkey-patch in sft_modal.py to be safe.",
+    "target_modules": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj",
+      "gate_proj",
+      "up_proj",
+      "down_proj"
+    ],
+    "modules_to_save": [
+      "embed_tokens",
+      "lm_head"
+    ],
+    "_ensure_weight_tying_explanation": "Gemma 4 ships with embed_tokens and lm_head tied. Listing both in modules_to_save makes both fully trainable; without ensure_weight_tying=true the two would drift apart during training and the merged model would generate degraded text. Requires PEFT >= 0.19.0.",
+    "ensure_weight_tying": true
+  },
+  "training": {
+    "epochs": 2.0,
+    "learning_rate": 2e-5,
+    "per_device_batch_size": 4,
+    "gradient_accumulation_steps": 4,
+    "warmup_ratio": 0.03,
+    "weight_decay": 0.01,
+    "seed": 42
+  }
+}

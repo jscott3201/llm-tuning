@@ -1,0 +1,649 @@
+{#---------------------------------------------------------------------
+   custom_pub_chat_template_qwen36.jinja
+   =====================================
+   A public, harness-friendly fork of Qwen's Qwen3.6-27B chat template,
+   tuned for open-source agentic coding harnesses like:
+     - anomalyco/opencode      (https://github.com/anomalyco/opencode)
+     - earendil-works/pi       (https://github.com/earendil-works/pi)
+     - openclaw, OpenHarness,  similar Claude-Code-style harnesses
+
+   WHY THIS FORK EXISTS
+   --------------------
+   The upstream chat template at `Qwen/Qwen3.6-27B` is correct for chat
+   use, but six real edge cases bite agentic coding harnesses pointing
+   at a self-hosted SGLang / vLLM / llama.cpp endpoint serving Qwen3.6:
+
+   1. Multi-turn tool argument collapse. After 2-3 turns of calling the
+      same tool, the model emits arguments: {} despite its prior
+      reasoning correctly identifying the parameters. Root cause: the
+      upstream template defaults preserve_thinking=false, which means
+      prior-turn <think> blocks are silently dropped from history; the
+      model loses its own trace of "how did I pick the parameters last
+      time?" and degenerates. Documented at:
+        https://github.com/earendil-works/pi/issues/3325
+      The Qwen3.6 model card explicitly states the model was post-
+      trained for "Thinking Preservation" in agent scenarios — the
+      preserve_thinking-FALSE default is wrong for our use case.
+
+   2. The `developer` role rejected. Modern coding harnesses
+      (opencode, Claude Code, openclaw, Continue) send a `developer`
+      role for reasoning-capable models, following OpenAI's Responses
+      API convention. Upstream raises "Unexpected message role" —
+      crashing the entire request. Reported and documented at:
+        https://gist.github.com/sudoingX/c2facf7d8f7608c65c1024ef3b22d431
+        ("Qwen 3.5 GGUF templates reject the developer role sent by
+         OpenCode, Claude Code, and other modern agent tools.")
+
+   3. tool_call.arguments arriving as a JSON string crashes with a
+      cryptic Jinja error ("Can only get item pairs from a mapping").
+      The Vercel AI SDK (used by opencode) and several other OpenAI-
+      compatible adapters hand arguments back as a JSON-encoded
+      STRING rather than the deserialized object. Diagnosing this
+      from the upstream error message is painful. Documented at:
+        https://github.com/earendil-works/pi/issues/3325
+      (NB: anomalyco/opencode#24264 was previously cited here but it
+       is about Nvidia-NIM/DeepSeek-v4 kwargs stripping, NOT string-
+       typed tool_call.arguments — removed as mis-attributed. It is
+       still a valid citation for the S04 stripped-kwargs scenario.)
+
+   4. The opening `<tool_call>` tag is sometimes omitted by the model
+      (documented at https://github.com/QwenLM/Qwen3-Coder/issues/475)
+      and `<tool_call>` can appear inside an unclosed `<think>` block
+      (https://github.com/ollama/ollama/issues/14493). The upstream
+      template's content-parsing only recognizes `</think>` and only
+      when properly closed, so reasoning bleeds into the conversation
+      content channel. Whitespace variants of `</think>` aren't
+      recognized either.
+
+   5. The OpenAI envelope around tool definitions
+      ({"type":"function","function":{...}}) is passed verbatim
+      through `tool | tojson`, wasting tokens and diverging from
+      what the model expects. Qwen's own most recent coder model,
+      Qwen3-Coder-Next, unwraps this envelope in its own canonical
+      chat template:
+        https://huggingface.co/Qwen/Qwen3-Coder-Next/blob/main/chat_template.jinja
+      (lines 35-37). The Qwen3.6-27B upstream template just hasn't
+      caught up to the newer convention.
+
+   6. The upstream IMPORTANT instructions block is missing three
+      bullets that address common public Qwen3-Coder failure modes:
+        - Omitting the opening <tool_call> tag (Qwen3-Coder #475)
+        - Indenting <tool_call> with leading whitespace
+          (defensive guidance; see citation note at the Q6 patch
+           site below)
+        - Nesting <tool_call> blocks instead of emitting parallel
+          calls
+      Note: block/goose#6883 (https://github.com/block/goose/issues/6883)
+      documents Qwen3-Coder under Ollama with ~5-6+ tools emitting XML
+      tool calls into the CONTENT channel rather than the structured
+      field — a format/channel failure that the strengthened block's
+      "complete <tool_call>...</tool_call> wrapping" bullets also help
+      with. It is NOT a report of leading-whitespace indentation; the
+      indentation bullet is defensive guidance.
+
+   PATCH INVENTORY (full details next to each patch site below)
+   ------------------------------------------------------------
+   Q1  preserve_thinking default flipped FALSE→TRUE
+   Q2  `developer` role accepted as alias for `system`
+   Q3  Raise a clear, debuggable error on string tool_call.arguments
+   Q4  Robust </think> variant handling + unclosed-think rescue
+   Q5  Unwrap OpenAI tool envelope to inner function spec (gated)
+   Q6  Strengthened IMPORTANT instructions block (gated)
+   Q7  Mid-conversation system/developer rendered inline (gated)
+   Q8  Single tool_call mapping normalized to a one-item list
+
+   INVARIANTS
+   ----------
+   1. STRICT-EQUIVALENCE: With kwargs
+        preserve_thinking=false,        (recovers Q1)
+        unwrap_tool_envelope=false,     (recovers Q5)
+        verbose_tool_instructions=false (recovers Q6)
+      AND inputs that don't exercise:
+        Q2 (no `developer` role),
+        Q3 (no string-typed arguments),
+        Q4 (no `</thinking>`/whitespace `</think>` variants, and no
+            UNCLOSED `<think>` — i.e. assistant content with a `<think>`
+            opener but no recognized close tag),
+        Q7 (no system/developer message after index 0),
+        Q8 (no tool_calls handed back as a single mapping rather than a
+            list),
+      this template renders byte-for-byte identical to upstream. The
+      conformance suite at test_custom_pub_chat_template_qwen36.py locks
+      this in across the simple-input matrix.
+
+      NB on Q4: for plain `</think>` inputs (the close tag upstream
+      recognizes), Q4 reproduces upstream's EXACT split semantics —
+      including pathological bodies such as multiple `</think>`, embedded
+      literal `<think>` substrings (e.g. an agent turn editing a chat
+      template), and nested `<think>` openers. Those are byte-identical
+      to upstream. Only `</thinking>`, whitespace `</think>` variants, and
+      unclosed-`<think>` bodies (which upstream mishandles) diverge — and
+      only ever in the strictly-safer direction.
+
+   2. STRICT-SAFETY: For every input upstream handles without error,
+      this template handles correctly with semantically equivalent
+      or strictly safer output. The strict-where-upstream-silent
+      patches (Q3, Q4, Q7, Q8) only fire on inputs that hit the
+      documented bug surfaces (Q7/Q8 only fire on shapes upstream
+      either crashes on or silently drops).
+
+   USAGE
+   -----
+   Server side (e.g. SGLang or vLLM):
+
+     # SGLang
+     python -m sglang.launch_server \
+       --model-path Qwen/Qwen3.6-27B \
+       --chat-template /path/to/custom_pub_chat_template_qwen36.jinja \
+       --tool-call-parser qwen3_coder \
+       --reasoning-parser qwen3
+
+     # vLLM
+     vllm serve Qwen/Qwen3.6-27B \
+       --chat-template /path/to/custom_pub_chat_template_qwen36.jinja \
+       --tool-call-parser qwen3_coder \
+       --reasoning-parser qwen3 \
+       --enable-auto-tool-choice
+
+   Harness side: no changes required for the common case. The
+   defaults are tuned for agentic coding out of the box. If you need
+   to recover the upstream defaults explicitly:
+     {
+       "extra_body": {
+         "chat_template_kwargs": {
+           "enable_thinking": true,
+           "preserve_thinking": false,
+           "unwrap_tool_envelope": false,
+           "verbose_tool_instructions": false
+         }
+       }
+     }
+   For opencode-style providers, this maps to chat_template_args in
+   the model config; for pi, use compat.thinkingFormat="qwen-chat-
+   template" and pi will inject the kwargs correctly.
+
+   PINS
+   ----
+   Forked from Qwen/Qwen3.6-27B/chat_template.jinja
+   Upstream MD5:  52b6d51ae5b203cb67e64b648494dad2  (153 lines)
+   Fork date:     2026-05-25
+   License:       Apache 2.0 (same as upstream)
+   Maintainer:    see repo README
+
+---------------------------------------------------------------------#}
+
+{#- Vision counters (identical to upstream). -#}
+{%- set image_count = namespace(value=0) %}
+{%- set video_count = namespace(value=0) %}
+
+{#- ============================================================================
+    Content rendering macro.
+
+    Functionally identical to upstream's macro of the same name. The only
+    cosmetic difference is the `add_vision_id is defined and add_vision_id`
+    guard instead of upstream's bare `if add_vision_id` — a defensive
+    rewrite that prevents undefined-variable errors in some minijinja
+    runtimes (llama.cpp, MLX). No rendering-time behavior change for
+    Python Jinja2 (SGLang/vLLM) since both runtimes treat undefined as
+    falsy.
+    ============================================================================ -#}
+{%- macro render_content(content, do_vision_count, is_system_content=false) %}
+    {%- if content is string %}
+        {{- content }}
+    {%- elif content is iterable and content is not mapping %}
+        {%- for item in content %}
+            {%- if 'image' in item or 'image_url' in item or item.type == 'image' %}
+                {%- if is_system_content %}
+                    {{- raise_exception('System message cannot contain images.') }}
+                {%- endif %}
+                {%- if do_vision_count %}
+                    {%- set image_count.value = image_count.value + 1 %}
+                {%- endif %}
+                {%- if add_vision_id is defined and add_vision_id %}
+                    {{- 'Picture ' ~ image_count.value ~ ': ' }}
+                {%- endif %}
+                {{- '<|vision_start|><|image_pad|><|vision_end|>' }}
+            {%- elif 'video' in item or item.type == 'video' %}
+                {%- if is_system_content %}
+                    {{- raise_exception('System message cannot contain videos.') }}
+                {%- endif %}
+                {%- if do_vision_count %}
+                    {%- set video_count.value = video_count.value + 1 %}
+                {%- endif %}
+                {%- if add_vision_id is defined and add_vision_id %}
+                    {{- 'Video ' ~ video_count.value ~ ': ' }}
+                {%- endif %}
+                {{- '<|vision_start|><|video_pad|><|vision_end|>' }}
+            {%- elif 'text' in item %}
+                {{- item.text }}
+            {%- else %}
+                {{- raise_exception('Unexpected item type in content.') }}
+            {%- endif %}
+        {%- endfor %}
+    {%- elif content is none or content is undefined %}
+        {{- '' }}
+    {%- else %}
+        {{- raise_exception('Unexpected content type.') }}
+    {%- endif %}
+{%- endmacro %}
+
+{#- ============================================================================
+    Q1 (public fork): preserve_thinking default flipped FALSE → TRUE.
+
+    Why: upstream's preserve_thinking gate at the assistant-rendering site
+    is:
+      {%- if (preserve_thinking is defined and preserve_thinking is true)
+              or (loop.index0 > ns.last_query_index) %}
+    With preserve_thinking unset, prior-turn <think> blocks (assistant
+    turns at indices <= last_query_index) are dropped from history. The
+    model loses its own trace of how it chose tool arguments on prior
+    turns and degenerates after 2-3 multi-turn calls of the same tool.
+
+    The canonical public bug-report on this exact failure mode for
+    Qwen3.6 is `earendil-works/pi#3325`:
+      https://github.com/earendil-works/pi/issues/3325
+    "Qwen3.6 tool calls loop with empty arguments: qwen-chat-template
+     missing preserve_thinking ... After 2-3 turns every tool call has
+     arguments: {}."
+
+    The Qwen3.6 model card explicitly states (verbatim):
+      "Qwen3.6 has been additionally trained to preserve and leverage
+       thinking traces from historical messages ... particularly
+       beneficial for agent scenarios."
+
+    So this is not just a workaround — preserve_thinking=true is the
+    model-card-recommended setting for agentic harnesses. The public
+    fork makes it the default.
+
+    Recover upstream behavior: pass preserve_thinking=false explicitly.
+    ============================================================================ -#}
+{%- if preserve_thinking is not defined %}
+    {%- set preserve_thinking = true %}
+{%- endif %}
+
+{#- Q5 / Q6 (public fork): both gated by kwargs, default true. See the
+    patch sites below for the full rationale and citations. -#}
+{%- if unwrap_tool_envelope is not defined %}
+    {%- set unwrap_tool_envelope = true %}
+{%- endif %}
+{%- if verbose_tool_instructions is not defined %}
+    {%- set verbose_tool_instructions = true %}
+{%- endif %}
+{#- Q7 (public fork): gate for strict upstream rejection of a
+    system/developer message that is not at index 0. Defaults FALSE so a
+    live agent loop survives mid-conversation steering messages; pass
+    strict_system_position=true to restore upstream's hard raise. See the
+    Q7 patch site in the main message loop below. -#}
+{%- if strict_system_position is not defined %}
+    {%- set strict_system_position = false %}
+{%- endif %}
+
+{%- if not messages %}
+    {{- raise_exception('No messages provided.') }}
+{%- endif %}
+
+{#- ============================================================================
+    Q2 (public fork): `developer` role accepted as an alias for `system`.
+
+    Upstream's role check (in the index-0 system handling AND in the
+    main message loop) only accepts `system`; a `developer` role
+    raises "Unexpected message role" and crashes the request.
+
+    Modern coding harnesses (opencode, Claude Code, openclaw, Continue)
+    emit a `developer` role for reasoning-capable models, following
+    OpenAI's Responses API convention. This causes the entire request
+    to fail when pointed at a stock Qwen3.6 server.
+
+    Reference (gist documenting the bite for OpenCode + Qwen3.5):
+      https://gist.github.com/sudoingX/c2facf7d8f7608c65c1024ef3b22d431
+
+    Below: we normalize the index-0 role for the upcoming system-block
+    decision, then in the main message loop we treat both as system.
+    The change is invisible for inputs that only use `system`.
+    ============================================================================ -#}
+{%- if tools and tools is iterable and tools is not mapping %}
+    {{- '<|im_start|>system\n' }}
+    {{- "# Tools\n\nYou have access to the following functions:\n\n<tools>" }}
+    {%- for tool in tools %}
+        {{- "\n" }}
+        {#- Q5 (public fork): unwrap the OpenAI envelope.
+
+            Background: harnesses speaking OpenAI tool-call protocol send
+            tool definitions wrapped in {"type":"function","function":{...}}.
+            Upstream passes the WHOLE wrapper through `tool | tojson`,
+            emitting an extra layer the model has to mentally peel off,
+            and wasting ~12 tokens per tool.
+
+            Qwen's own most recent coder model unwraps this envelope in
+            its canonical chat template:
+              https://huggingface.co/Qwen/Qwen3-Coder-Next/blob/main/chat_template.jinja
+            (lines 35-37: `{%- if tool.function is defined %}{%- set tool =
+            tool.function %}{%- endif %}`).
+
+            Qwen3.6-27B's upstream template predates that change; this
+            patch backports the unwrap behavior so Qwen3.6 sees the same
+            tool format Qwen3-Coder-Next was trained on.
+
+            Recover upstream behavior: pass unwrap_tool_envelope=false. -#}
+        {%- if unwrap_tool_envelope and tool.function is defined %}
+            {{- tool.function | tojson }}
+        {%- else %}
+            {{- tool | tojson }}
+        {%- endif %}
+    {%- endfor %}
+    {{- "\n</tools>" }}
+    {#- Q6 (public fork): strengthened IMPORTANT instructions block.
+
+        Upstream's IMPORTANT block has 4 bullets. The strengthened
+        version adds three bullets that address documented public Qwen
+        coder failure modes:
+
+        - "Do NOT omit the opening <tool_call> tag":
+            https://github.com/QwenLM/Qwen3-Coder/issues/475
+        - "MUST be at the very beginning of a new line, with NO leading
+           spaces or indentation":
+            defensive guidance (no single canonical public report of a
+            leading-whitespace <tool_call> for Qwen3.6; common-sense
+            hardening against indentation drift under load).
+        - "Do NOT nest <tool_call> blocks inside one another":
+            defensive guidance against parallel-call malformation.
+
+        block/goose#6883 (https://github.com/block/goose/issues/6883)
+        is the canonical report that with ~5-6+ tools the model emits
+        XML tool calls into the CONTENT channel instead of the
+        structured field; the "complete <tool_call>...</tool_call>
+        wrapping" bullet directly targets that. (#6883 is NOT a
+        leading-whitespace report — earlier revisions of this comment
+        mis-cited it for the indentation bullet.)
+
+        These bullets are pure additive guidance to the model; they
+        don't change tool-call wire-format behavior for well-formed
+        outputs, but they reduce error rates on the documented edge
+        cases.
+
+        Recover upstream behavior: pass verbose_tool_instructions=false. -#}
+    {%- if verbose_tool_instructions %}
+        {{- '\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags.\n- Do NOT omit the opening <tool_call> tag. Every function call MUST be wrapped in a complete <tool_call>...</tool_call> block.\n- The <tool_call> and <function> tags MUST be at the very beginning of a new line, with NO leading spaces or indentation.\n- Required parameters MUST be specified.\n- To call multiple functions, output a separate, completely closed <tool_call></tool_call> block for EACH function. Do NOT nest <tool_call> blocks inside one another.\n- You may provide reasoning inside <think>...</think> blocks BEFORE the <tool_call>, but NOT after. After a tool call there must be NO suffix on the same turn.\n- If no function call is needed, answer the question normally and do not mention function calls.\n</IMPORTANT>' }}
+    {%- else %}
+        {{- '\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT>' }}
+    {%- endif %}
+    {#- Q2 (public fork): accept developer role at index 0. -#}
+    {%- if messages[0].role == 'system' or messages[0].role == 'developer' %}
+        {%- set content = render_content(messages[0].content, false, true)|trim %}
+        {%- if content %}
+            {{- '\n\n' + content }}
+        {%- endif %}
+    {%- endif %}
+    {{- '<|im_end|>\n' }}
+{%- else %}
+    {#- Q2 (public fork): accept developer role at index 0. -#}
+    {%- if messages[0].role == 'system' or messages[0].role == 'developer' %}
+        {%- set content = render_content(messages[0].content, false, true)|trim %}
+        {{- '<|im_start|>system\n' + content + '<|im_end|>\n' }}
+    {%- endif %}
+{%- endif %}
+
+{#- last_query_index walk (identical to upstream). When preserve_thinking=true
+    (the public fork's default), the index produced here is not consulted —
+    the assistant-render guard below only checks preserve_thinking first. -#}
+{%- set ns = namespace(multi_step_tool=true, last_query_index=messages|length - 1) %}
+{%- for message in messages[::-1] %}
+    {%- set index = (messages|length - 1) - loop.index0 %}
+    {%- if ns.multi_step_tool and message.role == "user" %}
+        {%- set content = render_content(message.content, false)|trim %}
+        {%- if not(content.startswith('<tool_response>') and content.endswith('</tool_response>')) %}
+            {%- set ns.multi_step_tool = false %}
+            {%- set ns.last_query_index = index %}
+        {%- endif %}
+    {%- endif %}
+{%- endfor %}
+{%- if ns.multi_step_tool %}
+    {{- raise_exception('No user query found in messages.') }}
+{%- endif %}
+
+{%- for message in messages %}
+    {%- set content = render_content(message.content, true)|trim %}
+    {%- if message.role == "system" or message.role == "developer" %}
+        {#- ----------------------------------------------------------------
+            Q2 + Q7 (public fork): system/developer message handling.
+
+            Q2: both roles are valid at index 0; upstream rejected
+            `developer` here. The index-0 system block was already rendered
+            in the header above, so for loop.first there is nothing to emit.
+
+            Q7: mid-conversation system/developer messages.
+            Q2 aliased `developer` at index 0, but upstream's main-loop guard
+            still HARD-CRASHED on ANY system/developer message after index 0
+            — exactly the failure mode Q2 set out to fix (opencode / Continue
+            / Claude-Code-style harnesses inject `developer` or `system`
+            steering messages mid-session), just at a later index. Upstream
+            raises here too, so this is not a regression, but it takes down a
+            live agent loop. The fork now renders a mid-conversation
+            system/developer message inline as a valid Qwen `<|im_start|>system`
+            frame instead of killing the request.
+
+            Recover strict upstream-rejection behavior: pass
+            strict_system_position=true (byte-identity is unaffected because
+            upstream raises on this shape anyway).
+            ---------------------------------------------------------------- #}
+        {%- if loop.first %}
+            {#- Index-0 system/developer already emitted in the header block. -#}
+        {%- elif strict_system_position %}
+            {{- raise_exception('System/developer message must be at the beginning.') }}
+        {%- else %}
+            {{- '<|im_start|>system\n' + content + '<|im_end|>\n' }}
+        {%- endif %}
+    {%- elif message.role == "user" %}
+        {{- '<|im_start|>' + message.role + '\n' + content + '<|im_end|>' + '\n' }}
+    {%- elif message.role == "assistant" %}
+        {#- ----------------------------------------------------------------
+            Q8 (public fork): normalize a single tool_call mapping into a
+            one-element list.
+
+            Some OpenAI-compat adapters hand back a single tool_call OBJECT
+            (a mapping/dict) rather than a list. Upstream's two
+            `... is not mapping` guards then SILENTLY DROP the call: the
+            assistant turn renders with empty content and no <tool_call>,
+            desyncing the following `tool` message and breaking the
+            call/response pairing the agent loop depends on. This is in the
+            same defensive family as Q3. We normalize once here so both
+            downstream guards and the emit loop see a list; for the
+            well-formed list case `tool_calls` is unchanged, and for the
+            (malformed) single-mapping case upstream would have dropped it
+            anyway, so byte-identity on inputs upstream renders correctly is
+            preserved.
+            ---------------------------------------------------------------- #}
+        {%- set tool_calls = message.tool_calls %}
+        {%- if tool_calls is mapping %}
+            {%- set tool_calls = [tool_calls] %}
+        {%- endif %}
+        {#- ----------------------------------------------------------------
+            Q4 (public fork): robust </think> variant handling + unclosed-
+            think rescue.
+
+            Upstream's content parsing only recognizes `</think>`, and only
+            when it appears with a properly opened `<think>` somewhere
+            earlier in the content. Three documented failure modes leak:
+
+            - The model emits `</thinking>` (long form) — upstream treats
+              the entire content as non-reasoning text, then `<think>` and
+              `</thinking>` literals leak into the model's view of history.
+            - Whitespace variants `</ think>` and `</think >` happen with
+              some quantization runtimes (especially older llama.cpp builds).
+            - `<tool_call>` appears INSIDE an unclosed `<think>` block (the
+              model started reasoning, decided to call a tool, and forgot
+              to close the think block first).
+
+            The Ollama equivalent of this bug:
+              https://github.com/ollama/ollama/issues/14493
+              (paraphrase, not a verbatim quote) tool calls in the Qwen 3
+              and Qwen 3.5 model families were not parsed correctly when
+              emitted during thinking; the parser side was fixed in Ollama
+              0.17.3, but the renderer side persists — which is what Q4
+              addresses.
+
+            The Qwen3-Coder equivalent (model omitting opening tag):
+              https://github.com/QwenLM/Qwen3-Coder/issues/475
+
+            Q4 handles all four cases. The strict-improvement contract:
+            for any input upstream parses correctly (only `</think>`,
+            properly closed), behavior here is identical.
+            ---------------------------------------------------------------- #}
+        {%- set reasoning_content = '' %}
+        {%- if message.reasoning_content is string %}
+            {%- set reasoning_content = message.reasoning_content %}
+        {%- else %}
+            {%- set think_end = '' %}
+            {%- if '</think>' in content %}
+                {%- set think_end = '</think>' %}
+            {%- elif '</thinking>' in content %}
+                {%- set think_end = '</thinking>' %}
+            {%- elif '</ think>' in content %}
+                {%- set think_end = '</ think>' %}
+            {%- elif '</think >' in content %}
+                {%- set think_end = '</think >' %}
+            {%- endif %}
+            {%- if think_end %}
+                {#- Mirror upstream's EXACT split semantics, parameterized on
+                    the detected close-tag variant, so that for plain `</think>`
+                    inputs the output is byte-identical to upstream — including
+                    pathological bodies (multiple `</think>`, embedded literal
+                    `<think>`, e.g. an agent turn editing a chat template).
+                    Upstream (lines 95-96):
+                      reasoning = content.split('</think>')[0]
+                                         .rstrip('\n')
+                                         .split('<think>')[-1]
+                                         .lstrip('\n')
+                      content   = content.split('</think>')[-1].lstrip('\n')
+                    i.e. reasoning = text after the LAST `<think>` opener and
+                    before the FIRST close tag; content = text after the LAST
+                    close tag. We reproduce that, substituting `think_end` for
+                    the literal `</think>` so `</thinking>` and whitespace
+                    variants are handled with the same (upstream-equivalent)
+                    last-opener / first-closer / last-closer semantics. -#}
+                {%- set reasoning_content = content.split(think_end)[0].rstrip('\n').split('<think>')[-1].lstrip('\n') %}
+                {%- set content = content.split(think_end)[-1].lstrip('\n') %}
+            {%- elif '<think>' in content %}
+                {#- Unclosed think; rescue when followed by <tool_call>
+                    (ollama#14493 pattern). -#}
+                {%- set prefix = content.split('<think>')[0] %}
+                {%- set think_part = content.split('<think>')[1:] | join('<think>') %}
+                {%- if '<tool_call>' in think_part %}
+                    {%- set reasoning_content = think_part.split('<tool_call>')[0] %}
+                    {%- set content = prefix ~ '\n<tool_call>' ~ think_part.split('<tool_call>')[1:] | join('<tool_call>') %}
+                {%- else %}
+                    {%- set reasoning_content = think_part %}
+                    {%- set content = prefix %}
+                {%- endif %}
+            {%- endif %}
+        {%- endif %}
+        {%- set reasoning_content = reasoning_content | trim %}
+        {%- set content = content | trim %}
+
+        {#- Strip any leaked <tool_call> text from content; real tool_calls
+            come from the dedicated field. (Identical to upstream's intent
+            but expressed inline rather than relying on upstream's regex.)
+            Uses the Q8-normalized `tool_calls`. -#}
+        {%- if tool_calls and tool_calls is iterable and tool_calls is not mapping %}
+            {%- if '<tool_call>' in content %}
+                {%- set content = content.split('<tool_call>')[0] | trim %}
+            {%- endif %}
+        {%- endif %}
+
+        {#- Reasoning-emission gate. Mirrors upstream's structure exactly,
+            but with the Q1 default flip in effect: preserve_thinking
+            defaults true, so prior-turn <think> blocks survive. -#}
+        {%- if (preserve_thinking is defined and preserve_thinking is true) or (loop.index0 > ns.last_query_index) %}
+            {{- '<|im_start|>' + message.role + '\n<think>\n' + reasoning_content + '\n</think>\n\n' + content }}
+        {%- else %}
+            {{- '<|im_start|>' + message.role + '\n' + content }}
+        {%- endif %}
+
+        {%- if tool_calls and tool_calls is iterable and tool_calls is not mapping %}
+            {%- for tool_call in tool_calls %}
+                {%- if tool_call.function is defined %}
+                    {%- set tool_call = tool_call.function %}
+                {%- endif %}
+                {%- if loop.first %}
+                    {%- if content|trim %}
+                        {{- '\n\n<tool_call>\n<function=' + tool_call.name + '>\n' }}
+                    {%- else %}
+                        {{- '<tool_call>\n<function=' + tool_call.name + '>\n' }}
+                    {%- endif %}
+                {%- else %}
+                    {{- '\n<tool_call>\n<function=' + tool_call.name + '>\n' }}
+                {%- endif %}
+                {%- if tool_call.arguments is defined %}
+                    {#- ----------------------------------------------------
+                        Q3 (public fork): debuggable raise on string args.
+
+                        Upstream uses `tool_call.arguments | items` (line 120
+                        of upstream/chat_template.jinja). When arguments
+                        is a JSON-encoded STRING — which is the wire-format
+                        the OpenAI spec defines, and what some harness
+                        adapters (notably the Vercel AI SDK used by
+                        opencode) hand back to the harness — `.items`
+                        raises:
+                          "Can only get item pairs from a mapping"
+                        which is impossible to debug without reading the
+                        Jinja runtime source.
+
+                        Q3 type-checks first and raises a clear error that
+                        names the bug surface and links to the canonical
+                        discussion. Harnesses MUST deserialize the JSON-
+                        encoded arguments string exactly once on ingest
+                        and store the resulting dict. See:
+                          https://github.com/earendil-works/pi/issues/3325
+
+                        For inputs where arguments is already a dict (the
+                        well-formed case), behavior is identical to upstream.
+                        ---------------------------------------------------- #}
+                    {%- if tool_call.arguments is mapping %}
+                        {%- for args_name, args_value in tool_call.arguments|items %}
+                            {{- '<parameter=' + args_name + '>\n' }}
+                            {%- set args_value = args_value | string if args_value is string else args_value | tojson | safe %}
+                            {{- args_value }}
+                            {{- '\n</parameter>\n' }}
+                        {%- endfor %}
+                    {%- elif tool_call.arguments is string %}
+                        {{- raise_exception(
+                            "custom_pub_chat_template_qwen36: "
+                            "tool_call.arguments must be a JSON object "
+                            "(mapping). Got a string. This is almost "
+                            "always the harness handing back a JSON-"
+                            "encoded STRING rather than the deserialized "
+                            "object (common with Vercel AI SDK). "
+                            "Deserialize once on ingest and store the "
+                            "object. See: "
+                            "github.com/earendil-works/pi/issues/3325"
+                        ) }}
+                    {%- endif %}
+                {%- endif %}
+                {{- '</function>\n</tool_call>' }}
+            {%- endfor %}
+        {%- endif %}
+        {{- '<|im_end|>\n' }}
+    {%- elif message.role == "tool" %}
+        {%- if loop.previtem and loop.previtem.role != "tool" %}
+            {{- '<|im_start|>user' }}
+        {%- endif %}
+        {{- '\n<tool_response>\n' }}
+        {{- content }}
+        {{- '\n</tool_response>' }}
+        {%- if not loop.last and loop.nextitem.role != "tool" %}
+            {{- '<|im_end|>\n' }}
+        {%- elif loop.last %}
+            {{- '<|im_end|>\n' }}
+        {%- endif %}
+    {%- else %}
+        {{- raise_exception('Unexpected message role.') }}
+    {%- endif %}
+{%- endfor %}
+{%- if add_generation_prompt %}
+    {{- '<|im_start|>assistant\n' }}
+    {%- if enable_thinking is defined and enable_thinking is false %}
+        {{- '<think>\n\n</think>\n\n' }}
+    {%- else %}
+        {{- '<think>\n' }}
+    {%- endif %}
+{%- endif %}

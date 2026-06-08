@@ -1,0 +1,90 @@
+{
+  "label": "E4B-c1-b200",
+  "endpoint": "https://<the URL printed by modal deploy serve_e4b.py>",
+  "model": "google/gemma-4-E4B-it",
+  "concurrency": 1,
+  "requests": 10,
+  "max_tokens": 256,
+  "timestamp": "2026-05-06T17:35:58.857301+00:00",
+  "wall_time_s": 16.593,
+  "total_output_tokens": 1956,
+  "throughput_tokens_per_s": 117.88,
+  "successful_requests": 9,
+  "failed_requests": 1,
+  "latency_mean_s": 1.262,
+  "latency_p50_s": 1.352,
+  "latency_p95_s": 1.484,
+  "output_tokens_mean": 217.3,
+  "per_request": [
+    {
+      "index": 0,
+      "latency_s": 0.8207175419993291,
+      "output_tokens": 90,
+      "completion_text_len": 494,
+      "error": null
+    },
+    {
+      "index": 1,
+      "latency_s": 1.3979291249997914,
+      "output_tokens": 256,
+      "completion_text_len": 888,
+      "error": null
+    },
+    {
+      "index": 2,
+      "latency_s": 0.9581422080009361,
+      "output_tokens": 150,
+      "completion_text_len": 877,
+      "error": null
+    },
+    {
+      "index": 3,
+      "latency_s": 5.234734416999345,
+      "output_tokens": null,
+      "completion_text_len": 0,
+      "error": "HTTPStatusError: Client error '408 Request Timeout' for url 'https://<the URL printed by modal deploy serve_e4b.py>/v1/chat/completions'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/408"
+    },
+    {
+      "index": 4,
+      "latency_s": 1.3715406250012165,
+      "output_tokens": 256,
+      "completion_text_len": 1163,
+      "error": null
+    },
+    {
+      "index": 5,
+      "latency_s": 1.4843745409998519,
+      "output_tokens": 256,
+      "completion_text_len": 1188,
+      "error": null
+    },
+    {
+      "index": 6,
+      "latency_s": 1.3515472920007596,
+      "output_tokens": 256,
+      "completion_text_len": 1093,
+      "error": null
+    },
+    {
+      "index": 7,
+      "latency_s": 1.41268754200064,
+      "output_tokens": 256,
+      "completion_text_len": 1137,
+      "error": null
+    },
+    {
+      "index": 8,
+      "latency_s": 1.1228606659988145,
+      "output_tokens": 180,
+      "completion_text_len": 1013,
+      "error": null
+    },
+    {
+      "index": 9,
+      "latency_s": 1.437747666001087,
+      "output_tokens": 256,
+      "completion_text_len": 1033,
+      "error": null
+    }
+  ]
+}

@@ -1,0 +1,160 @@
+{
+  "label": "26B-A4B-c4-b200",
+  "endpoint": "https://<the URL printed by modal deploy serve_26b.py>",
+  "model": "google/gemma-4-26B-A4B-it",
+  "concurrency": 4,
+  "requests": 20,
+  "max_tokens": 256,
+  "timestamp": "2026-05-06T17:41:34.521430+00:00",
+  "wall_time_s": 9.114,
+  "total_output_tokens": 4470,
+  "throughput_tokens_per_s": 490.44,
+  "successful_requests": 20,
+  "failed_requests": 0,
+  "latency_mean_s": 1.708,
+  "latency_p50_s": 1.844,
+  "latency_p95_s": 2.047,
+  "output_tokens_mean": 223.5,
+  "per_request": [
+    {
+      "index": 0,
+      "latency_s": 0.7580353749999631,
+      "output_tokens": 85,
+      "completion_text_len": 463,
+      "error": null
+    },
+    {
+      "index": 1,
+      "latency_s": 2.0495441670009313,
+      "output_tokens": 256,
+      "completion_text_len": 820,
+      "error": null
+    },
+    {
+      "index": 2,
+      "latency_s": 1.5349840419985412,
+      "output_tokens": 163,
+      "completion_text_len": 915,
+      "error": null
+    },
+    {
+      "index": 3,
+      "latency_s": 2.047367499999382,
+      "output_tokens": 256,
+      "completion_text_len": 1094,
+      "error": null
+    },
+    {
+      "index": 4,
+      "latency_s": 1.8307531669997843,
+      "output_tokens": 256,
+      "completion_text_len": 1151,
+      "error": null
+    },
+    {
+      "index": 5,
+      "latency_s": 1.8435987919983745,
+      "output_tokens": 256,
+      "completion_text_len": 1209,
+      "error": null
+    },
+    {
+      "index": 6,
+      "latency_s": 1.8704171250010404,
+      "output_tokens": 256,
+      "completion_text_len": 1014,
+      "error": null
+    },
+    {
+      "index": 7,
+      "latency_s": 1.935154666998642,
+      "output_tokens": 256,
+      "completion_text_len": 1081,
+      "error": null
+    },
+    {
+      "index": 8,
+      "latency_s": 1.5285288340000989,
+      "output_tokens": 198,
+      "completion_text_len": 1094,
+      "error": null
+    },
+    {
+      "index": 9,
+      "latency_s": 1.844111458000043,
+      "output_tokens": 256,
+      "completion_text_len": 1072,
+      "error": null
+    },
+    {
+      "index": 10,
+      "latency_s": 0.8009042499998031,
+      "output_tokens": 85,
+      "completion_text_len": 463,
+      "error": null
+    },
+    {
+      "index": 11,
+      "latency_s": 1.9540479169991158,
+      "output_tokens": 256,
+      "completion_text_len": 820,
+      "error": null
+    },
+    {
+      "index": 12,
+      "latency_s": 1.3147230419999687,
+      "output_tokens": 163,
+      "completion_text_len": 914,
+      "error": null
+    },
+    {
+      "index": 13,
+      "latency_s": 1.98012691599979,
+      "output_tokens": 256,
+      "completion_text_len": 1066,
+      "error": null
+    },
+    {
+      "index": 14,
+      "latency_s": 1.8632109999998647,
+      "output_tokens": 256,
+      "completion_text_len": 1215,
+      "error": null
+    },
+    {
+      "index": 15,
+      "latency_s": 1.865383500000462,
+      "output_tokens": 256,
+      "completion_text_len": 1171,
+      "error": null
+    },
+    {
+      "index": 16,
+      "latency_s": 1.8413289999989502,
+      "output_tokens": 256,
+      "completion_text_len": 1050,
+      "error": null
+    },
+    {
+      "index": 17,
+      "latency_s": 1.959486707999531,
+      "output_tokens": 256,
+      "completion_text_len": 1117,
+      "error": null
+    },
+    {
+      "index": 18,
+      "latency_s": 1.5145217919998686,
+      "output_tokens": 192,
+      "completion_text_len": 1050,
+      "error": null
+    },
+    {
+      "index": 19,
+      "latency_s": 1.816234333000466,
+      "output_tokens": 256,
+      "completion_text_len": 963,
+      "error": null
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+[project]
+name = "qwen36-modal-serving"
+version = "0.1.0"
+description = "Qwen3.6-27B and Qwen3.6-35B-A3B on Modal B200/B300 via SGLang, in solo and concurrent shapes, with a custom chat-template fork and a Granite embedding sidecar. Served over Modal's public *.modal.run web endpoint."
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [{ name = "jscott3201" }]
+
+# Local control-plane tools only. You `modal deploy` the inference scripts and
+# hit the resulting public *.modal.run URL from any client. The container
+# images carry their own heavy deps (sglang, vllm, torch) installed at image
+# build time, so those are NOT listed here.
+dependencies = [
+    # Modal 1.4.x is the current major track and ships the
+    # `@modal.concurrent` + `@modal.web_server` decorators we rely on.
+    "modal>=1.4,<2",
+    "openai>=1.50",  # used by chat_templates/live_agentic_probe.py
+]
+
+[dependency-groups]
+# Local-only chat-template conformance tests in tests/. The Jinja template
+# renders locally with the system jinja2; no SGLang or CUDA is pulled into the
+# dev env. Install with `uv sync --group dev`.
+dev = [
+    "pytest>=8",
+    "jinja2>=3",
+]
+
+[tool.uv]
+package = false

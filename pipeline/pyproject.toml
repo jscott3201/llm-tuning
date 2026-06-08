@@ -1,0 +1,46 @@
+[project]
+name = "llm-tuning-pipeline"
+version = "0.1.0"
+description = "End-to-end LLM fine-tuning pipeline — serve, eval, corpus, and SFT stages driven from a local control plane against Modal-hosted vLLM/SGLang endpoints (the public *.modal.run URLs from `modal deploy`)."
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [{ name = "jscott3201" }]
+
+# Local control-plane tools only. The Modal container images carry their own
+# heavier dependencies (vllm, sglang, torch, transformers, peft, accelerate)
+# installed via `uv_pip_install` at image build time, so those are NOT listed
+# here.
+dependencies = [
+    # Modal 1.4.x is the current major track and ships the
+    # `@modal.concurrent` + `@modal.web_server` decorators we rely on.
+    # The earlier `allow_concurrent_inputs` parameter on `@app.function`
+    # is deprecated.
+    "modal>=1.4,<2",
+    "openai>=1.50",  # OpenAI-compatible client for the deployed *.modal.run endpoints
+]
+
+[project.optional-dependencies]
+# Subliminal-learning / benchmark probes run against an OpenAI-compatible
+# endpoint and pull public benchmarks from HuggingFace Datasets. Install with
+# `uv sync --extra probe` when you need to run the probe drivers under sft/.
+probe = [
+    "datasets>=4.0,<5.0",
+    "huggingface_hub>=1.0,<2.0",
+]
+
+[dependency-groups]
+# Local-only dev tools: chat-template conformance tests render the Jinja
+# templates with the system jinja2 (no SGLang/CUDA pulled in). Install with
+# `uv sync --group dev`.
+dev = [
+    "pytest>=8",
+    "jinja2>=3",
+]
+
+[tool.pytest.ini_options]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.uv]
+package = false
