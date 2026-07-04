@@ -1,0 +1,6 @@
+[project]
+name = "spec-decode"
+version = "0.1.0"
+description = "Speculative-decoding reference tooling (DeepSeek DSpark for Gemma 4), on Modal."
+requires-python = ">=3.12"
+dependencies = ["modal"]
