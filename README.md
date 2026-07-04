@@ -100,6 +100,17 @@ fine-tuned one, using a SQL agent over the public
 3. **corpus** — generate a synthetic SFT corpus with a larger model as the teacher,
 4. **sft** — LoRA fine-tune a small model and gate it against capability drift.
 
+## Speculative decoding (research)
+
+[`spec_decode/`](spec_decode/) is a faithful PyTorch **reference harness** for
+DeepSeek's [DSpark](https://github.com/deepseek-ai/DeepSpec) speculative-decoding
+drafter on Gemma 4. It loads the public draft
+([`deepseek-ai/dspark_gemma4_12b_block7`](https://huggingface.co/deepseek-ai/dspark_gemma4_12b_block7))
+and its 12B target and runs one block-7 draft forward on Modal, emitting a JSON
+fixture — base + rank-256 Markov logits, confidence, greedy tokens — you can diff
+a fast re-implementation against, op-by-op. Writeup:
+[docs/dspark-spec-decode.md](docs/dspark-spec-decode.md).
+
 ## Running on your own cloud
 
 The serve scripts are Modal wrappers around `python -m sglang.launch_server` and
@@ -110,3 +121,19 @@ The serve scripts are Modal wrappers around `python -m sglang.launch_server` and
 
 Apache 2.0. See [LICENSE](LICENSE). The model weights carry their own licenses
 (Apache-2.0 for the Gemma 4 and Qwen3.6 checkpoints used here).
+
+## Attributions
+
+This repository builds on the following projects and research — full credit to
+their authors and maintainers:
+
+- **[SGLang](https://github.com/sgl-project/sglang)** — the serving engine behind `gemma4/` and `qwen/`.
+- **[vLLM](https://github.com/vllm-project/vllm)** — the serving engine behind `pipeline/`.
+- **[Modal](https://modal.com)** — the deployment substrate every project runs on.
+- **[Google Gemma](https://ai.google.dev/gemma)** — the Gemma 4 model family (Apache-2.0).
+- **[Qwen](https://github.com/QwenLM/Qwen3)** — the Qwen3.6 model family (Apache-2.0).
+- **DeepSeek [DeepSpec](https://github.com/deepseek-ai/DeepSpec)** (MIT) and its DSpark drafter — `spec_decode/` is a reference harness for the released checkpoint [`deepseek-ai/dspark_gemma4_12b_block7`](https://huggingface.co/deepseek-ai/dspark_gemma4_12b_block7).
+- **[Chinook](https://github.com/lerocha/chinook-database)** — the public SQL database used as the `pipeline/` fine-tuning task.
+
+Model weights and upstream code remain under their own licenses; this repository
+only wraps and runs them.
