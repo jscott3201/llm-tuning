@@ -10,43 +10,19 @@ from __future__ import annotations
 import modal
 
 from _common.model_registry import get
+from _common.qat_image import IMAGE, PYTHON_SETUP, build_image
 from _common.vllm_common import build_serve_cmd, start_serve
 
 SPEC = get("31b-qat")
 SERVED_MODEL = "gemma-4-31b-it-qat-w4a16-ct"
-IMAGE = (
-    "docker.io/vllm/vllm-openai:v0.30.0-cu129@"
-    "sha256:58fdb6bb123a81aa53f46fa4652ad8cc87e817bd1077c9832c6258ef12c1c688"
-)
 APP_NAME = "gemma4-31b-qat-pilot"
 STARTUP_TIMEOUT = 20 * 60
 INPUT_TIMEOUT = 30 * 60
 IDLE_SECONDS = 300
 
-# Modal discovers `python` on PATH. Reuse the image's system interpreter so
-# its preinstalled serving packages stay in the same environment.
-PYTHON_SETUP = [
-    "RUN test -x /usr/bin/python3.12 && "
-    "if [ ! -e /usr/local/bin/python ] && [ ! -L /usr/local/bin/python ]; then "
-    "ln -s /usr/bin/python3.12 /usr/local/bin/python; fi && "
-    'test "$(readlink -f /usr/local/bin/python)" = "$(readlink -f /usr/bin/python3.12)"',
-    "RUN command -v pip && python -m pip --version && "
-    "python -c \"import os, sys; from importlib.metadata import version; "
-    "from importlib.util import find_spec; "
-    "assert os.path.realpath(sys.executable) == '/usr/bin/python3.12'; "
-    "assert sys.version_info[:2] == (3, 12); assert sys.prefix == sys.base_prefix; "
-    "assert version('vllm').split('+', 1)[0] == '0.30.0'; "
-    "print('python', sys.executable, sys.version, sys.prefix); "
-    "print('vllm', version('vllm'), find_spec('vllm').origin); "
-    "print('torch', version('torch'), find_spec('torch').origin)\"",
-]
 
 app = modal.App(APP_NAME)
-vllm_image = (
-    modal.Image.from_registry(IMAGE, setup_dockerfile_commands=PYTHON_SETUP)
-    .entrypoint([])
-    .add_local_python_source("_common")
-)
+vllm_image = build_image()
 hf_cache = modal.Volume.from_name("gemma4-31b-qat-pilot-hf-cache", create_if_missing=True)
 vllm_cache = modal.Volume.from_name("gemma4-31b-qat-pilot-vllm-cache", create_if_missing=True)
 

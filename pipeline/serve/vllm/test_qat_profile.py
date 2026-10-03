@@ -32,6 +32,14 @@ def recorded_profile():
             observed["image"].append(("entrypoint", value))
             return self
 
+        def add_local_file(self, *args, **kwargs):
+            observed["image"].append(("file", args, kwargs))
+            return self
+
+        def run_commands(self, *args, **kwargs):
+            observed["image"].append(("commands", args, kwargs))
+            return self
+
         def add_local_python_source(self, value):
             observed["image"].append(("source", value))
             return self
@@ -68,13 +76,18 @@ class QatProfileTests(unittest.TestCase):
         self.assertIsInstance(serve_31b_qat.serve, modal.Function)
         self.assertFalse(serve_31b_qat.serve.is_hydrated)
 
-    def test_image_is_immutable_without_install_or_python_injection(self):
+    def test_image_is_immutable_and_cpu_repair_precedes_guard_and_runtime_source(self):
         profile, observed = recorded_profile()
         self.assertEqual(observed["image"], [
             ("registry", ("docker.io/vllm/vllm-openai:v0.30.0-cu129@sha256:"
                            "58fdb6bb123a81aa53f46fa4652ad8cc87e817bd1077c9832c6258ef12c1c688",),
              {"setup_dockerfile_commands": profile["PYTHON_SETUP"]}),
-            ("entrypoint", []), ("source", "_common")])
+            ("entrypoint", []),
+            ("file", (PIPELINE / "_common/qat_repair.py", "/opt/qat/qat_repair.py"), {"copy": True}),
+            ("file", (PIPELINE / "_common/qat_stack.py", "/opt/qat/qat_stack.py"), {"copy": True}),
+            ("commands", ("/usr/bin/python3.12 /opt/qat/qat_repair.py",
+                          "/usr/bin/python3.12 /opt/qat/qat_stack.py"), {"gpu": None}),
+            ("source", "_common")])
 
     def test_python_alias_preserves_same_interpreter_and_refuses_other_destinations(self):
         profile, _ = recorded_profile()
