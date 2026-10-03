@@ -85,6 +85,87 @@ full history in that count. Validate each request or preserve the server's
 context rejection; do not silently truncate or resample. A client thinking
 budget is not enforced merely by enabling thinking in the chat template.
 
+## CPU preflight of an existing image
+
+`qat_preflight.py` runs the tracked CPU validator against one explicitly selected,
+already built Modal image. Import and `--help` allocate nothing. The command
+accepts a Modal image ID (`im-...`), not a registry tag or image recipe; it never
+calls the image factory or repairs/builds an image implicitly. This also allows
+an older image to serve as a negative control with the current validator.
+
+After obtaining a CPU-only runtime allowance, run from `pipeline/` using the
+prepared environment. Replace `im-PREBUILT` and `ENVIRONMENT`, and set
+`PRIVATE_RUN_DIR` to an existing private directory outside the checkout:
+
+```sh
+uv run --frozen --no-sync python serve/vllm/qat_preflight.py run \
+  --image-id im-PREBUILT --environment ENVIRONMENT \
+  --receipt "$PRIVATE_RUN_DIR/qat-cpu.json"
+```
+
+The receipt must be fresh. The command saves a random App description, Sandbox
+ownership tag, exact image ID, validator SHA256 and limits before allocating.
+Each allocation waits for its intent to be saved, and each returned ID is
+recorded immediately. A local lock prevents concurrent run/recovery commands
+from changing the same receipt. Keep both the receipt and its `.lock` sidecar
+at their original paths during the attempt.
+
+| Bound | Value |
+| --- | --- |
+| CPU request / limit | 1 / 1 core |
+| Memory request / limit | 4,096 / 4,096 MiB |
+| Sandbox lifetime | 90 seconds, including startup and validator execution |
+| Client budget | 180 seconds, with the final 45 seconds reserved for cleanup |
+| Retained validator stdout / stderr | 32,768 / 8,192 bytes |
+| Validator source transfer | At most 65,536 bytes, checked by size and SHA256 |
+
+The Sandbox has no GPU, secrets, cache volumes, published ports, PTY or OIDC
+identity token, and network access is blocked. A quiet entrypoint keeps the
+Sandbox available for a non-PTY exec whose raw stdout/stderr are drained
+concurrently with remote completion. The source is transferred into temporary
+Sandbox storage and verified before execution. Success requires both stream
+EOFs, remote exit zero, a valid passing validator report and verified cleanup.
+The declared NCCL metadata exception retains pip exit 1 and its passing policy
+status. Every other pip conflict is rejected.
+
+The receipt retains selected check statuses, remote exit code, stream byte
+counts and hashes, resource identities and cleanup evidence. It omits raw
+account inventory, SDK exceptions, environment contents and diagnostic output.
+A private receipt belongs outside version control. The local SDK worker and CLI
+children are bounded and joined; their termination does not prove that an
+unanswered server allocation request was cancelled.
+
+### Recovery without allocation
+
+On interruption or cleanup failure, reuse the same receipt and environment:
+
+```sh
+uv run --frozen --no-sync python serve/vllm/qat_preflight.py recover \
+  --environment ENVIRONMENT --receipt "$PRIVATE_RUN_DIR/qat-cpu.json"
+```
+
+Recovery creates no App, image, Function or Sandbox. It finds an unacknowledged
+App only by the saved unique description in the saved environment, rejects
+duplicate or mismatched identities, terminates acknowledged or uniquely tagged
+Sandboxes, and stops the exact App ID. Cleanup passes only after the App is
+reported `stopped`, its container inventory is empty, and both its full active
+Sandbox inventory and the owned-tag subset are empty. An already-stopped stop
+error is resolved by this readback.
+
+If an allocation reply was lost, a late resource can still appear after an
+empty inventory. Recovery stops subsequently discovered owned resources but
+continues to report `cleanup: unknown` while that allocation remains
+unresolved. Retain the receipt and reconcile the outstanding request with the
+provider; an empty snapshot or joined local worker cannot settle it. Receipt
+write errors fail the attempt while cleanup still runs using the known owned
+identities.
+
+Exit 0 means the requested run or recovery passed its checks; exit 1 means
+failure or unresolved cleanup; exit 130 reports an interruption after bounded
+cleanup. Recovery does not rerun or regrade the CPU validator. The public
+command and its offline tests do not qualify an actual image build, acquired
+native libraries, cloud cleanup, model loading or GPU serving.
+
 ## Authentication and launch
 
 Modal proxy authentication is required at ingress. Clients send

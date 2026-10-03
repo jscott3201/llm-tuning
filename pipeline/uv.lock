@@ -713,6 +713,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "modal" },
     { name = "openai" },
+    { name = "packaging" },
 ]
 
 [package.optional-dependencies]
@@ -733,6 +734,7 @@ requires-dist = [
     { name = "huggingface-hub", marker = "extra == 'probe'", specifier = ">=1.0,<2.0" },
     { name = "modal", specifier = ">=1.4,<2" },
     { name = "openai", specifier = ">=1.50" },
+    { name = "packaging", specifier = "==26.2" },
 ]
 provides-extras = ["probe"]
 

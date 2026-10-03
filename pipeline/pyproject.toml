@@ -17,6 +17,7 @@ dependencies = [
     # is deprecated.
     "modal>=1.4,<2",
     "openai>=1.50",  # OpenAI-compatible client for the deployed *.modal.run endpoints
+    "packaging==26.2",  # Validate the CPU preflight dependency-exception report
 ]
 
 [project.optional-dependencies]
