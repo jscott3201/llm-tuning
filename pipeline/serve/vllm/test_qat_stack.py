@@ -222,6 +222,20 @@ class PolicyTests(unittest.TestCase):
             self.assertEqual(final.args[0][1:], ["-m", "vllm.entrypoints.cli.main", "--help"])
 
 
+    def test_cli_diagnostics_before_help_are_retained_and_embedded_headers_fail(self):
+        diagnostic = "DEBUG platform: Explicitly selected CPU platform.\n"
+        header = "usage: main.py [-h] {serve,chat}\n"
+        for text, expected in ((diagnostic + header, "passed"),
+                               (diagnostic + "DEBUG quoted " + header, "failed"),
+                               (diagnostic + "usage: main.py.evil [-h] {serve}\n", "failed")):
+            with self.subTest(text=text):
+                children = [self.child('{"status":"passed"}'), self.child("No broken requirements found."),
+                            self.child('{"status":"passed"}'), self.child(text)]
+                with patch.object(guard, "run_child", side_effect=children):
+                    result = guard.check_stack()
+                self.assertEqual(result["status"], expected, result["checks"]["vllm_cli"])
+                self.assertEqual(result["checks"]["vllm_cli"]["stdout"], text)
+
     def test_actual_module_help_is_accepted_with_python_argv0(self):
         # The pinned CLI constructs ArgumentParser without prog. Exercise that
         # Python module-launch contract independently, without importing vLLM.

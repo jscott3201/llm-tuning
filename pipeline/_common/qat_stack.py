@@ -259,7 +259,8 @@ def check_stack():
             if name == "vllm_cli":
                 # Python -m sets argv[0] to main.py; the pinned parser uses
                 # argparse's default prog rather than the console-script name.
-                if not outcome["stdout"].startswith("usage: main.py ") or "serve" not in outcome["stdout"]:
+                # Platform diagnostics can precede help on the same stream.
+                if not re.search(r"^usage: main\.py ", outcome["stdout"], re.MULTILINE) or "serve" not in outcome["stdout"]:
                     outcome.update(status="failed", reason="expected_help_missing")
             else:
                 try:
