@@ -49,7 +49,8 @@ class Backend:
                                initial=(json.dumps(config, separators=(",", ":")) + "\n").encode(),
                                event=event, stdout_limit=131072)
 
-    async def terminate(self, receipt, deadline):
+    async def terminate(self, receipt, deadline, *, writes=None):
+        writes = writes if writes is not None else _ReceiptWrites()
         async def event(message):
             if message.get("event") == "sandbox_discovered":
                 target = identity("sandbox", message.get("id"))
@@ -57,7 +58,7 @@ class Backend:
                 if data["allocation"]["sandbox"] == "not_requested" or data["sandbox_id"] not in {None, target}:
                     raise ValueError("unexpected_sandbox_identity")
                 data["sandbox_id"] = target
-                receipt.save()
+                writes.save(receipt)
                 return True
             if message.get("event") not in {"termination", "failure"}:
                 raise ValueError("unexpected_termination_event")
@@ -151,14 +152,22 @@ class _ReceiptWrites:
     """Track write failures for one invocation without clearing durable history."""
     failed: bool = False
 
+    def save(self, receipt):
+        """Record every failed update and propagate it to withhold worker acknowledgments."""
+        try:
+            receipt.save()
+        except Exception:
+            self.failed = True
+            receipt.data["receipt_write_failed"] = True
+            raise
+
 
 def save_cleanup(receipt, writes):
     """A failed receipt update must never prevent an owned resource stop."""
     try:
-        receipt.save()
+        writes.save(receipt)
     except Exception:
-        writes.failed = True
-        receipt.data["receipt_write_failed"] = True
+        pass
 
 
 async def cleanup(receipt, backend, deadline, *, writes=None):
@@ -181,7 +190,7 @@ async def cleanup(receipt, backend, deadline, *, writes=None):
             data["app_id"] = row["App ID"]
             save_cleanup(receipt, writes)
             try:
-                await backend.terminate(receipt, min(deadline, asyncio.get_running_loop().time() + 10))
+                await backend.terminate(receipt, min(deadline, asyncio.get_running_loop().time() + 10), writes=writes)
             except Exception:
                 pass  # App stop and independent readback must still be attempted.
             await backend.stop(data["app_id"], deadline)
@@ -230,25 +239,25 @@ async def preflight(receipt, backend, source, *, final_deadline=None):
             if kind == "sandbox" and data["allocation"]["app"] != "acknowledged":
                 raise ValueError("sandbox_before_app_ack")
             data["allocation"][kind] = "unresolved"
-            receipt.save()
+            writes.save(receipt)
             return True
         if message.get("event") == "allocated" and kind in {"app", "sandbox"}:
             if data["allocation"][kind] != "unresolved":
                 raise ValueError("unexpected_allocation_reply")
             data[kind + "_id"] = identity(kind, message.get("id"))
             data["allocation"][kind] = "acknowledged"
-            receipt.save()
+            writes.save(receipt)
             return False
         if message.get("event") == "result" and not result_seen:
             if data["allocation"]["sandbox"] != "acknowledged" or not isinstance(message.get("result"), dict):
                 raise ValueError("result_before_sandbox_ack")
             result_seen = True
             data["result"] = sanitized_result(message["result"])
-            receipt.save()
+            writes.save(receipt)
             return False
         if message.get("event") == "failure":
             data["failure_reason"] = "sdk_operation_failed"
-            receipt.save()
+            writes.save(receipt)
             return False
         raise ValueError("unexpected_worker_event")
     try:
@@ -257,7 +266,7 @@ async def preflight(receipt, backend, source, *, final_deadline=None):
             if any(row.get("Description") == data["description"] for row in rows):
                 raise ValueError("baseline_description_present")
             data.update(baseline_absent=True, status="running")
-            receipt.save()
+            writes.save(receipt)
             config = {key: data[key] for key in ("image_id", "description", "tag", "environment",
                                                 "validator_sha256", "validator_bytes")}
             config["source"] = base64.b64encode(source).decode("ascii")

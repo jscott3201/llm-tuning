@@ -60,7 +60,7 @@ class FakeBackend:
         saved = json.loads(self.receipt.path.read_text())
         assert saved["allocation"] == {"app": app, "sandbox": sandbox}
 
-    async def terminate(self, receipt, deadline):
+    async def terminate(self, receipt, deadline, *, writes=None):
         self.active = False
         return True
 
@@ -312,6 +312,63 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.receipt.data["receipt_write_failed"])
         self.assertEqual(await control.recover(self.receipt, backend), 0)
         self.assertTrue(json.loads(self.receipt.path.read_text())["receipt_write_failed"])
+
+    async def test_recovery_discovery_write_failure_withholds_ack_and_records_history(self):
+        backend = self.acknowledged()
+        actual = control.Backend("selected")
+        backend.terminate = actual.terminate
+        save = self.receipt.save
+        in_callback = False
+        failed_once = False
+        acknowledgments = []
+        async def worker(mode, config, deadline, event):
+            nonlocal in_callback
+            self.assertEqual(mode, "terminate")
+            in_callback = True
+            try:
+                acknowledgments.append(await event({"event": "sandbox_discovered", "id": "sb-owned"}))
+            except OSError:
+                return {"reason": "local_process_error", "returncode": -9}
+            finally:
+                in_callback = False
+            return {"reason": None, "returncode": 0}
+        def fail_discovery_save_once():
+            nonlocal failed_once
+            if in_callback and not failed_once:
+                failed_once = True
+                raise OSError("authored discovery receipt failure")
+            save()
+        with patch.object(actual, "worker", side_effect=worker), patch.object(
+                self.receipt, "save", side_effect=fail_discovery_save_once):
+            self.assertEqual(await control.recover(self.receipt, backend), 1)
+            self.assertTrue(failed_once)
+            self.assertEqual(acknowledgments, [])
+            self.assertEqual(backend.stops, ["ap-owned"])
+            saved = json.loads(self.receipt.path.read_text())
+            self.assertEqual(saved["cleanup"], "verified")
+            self.assertTrue(saved["receipt_write_failed"])
+            self.assertEqual(await control.recover(self.receipt, backend), 0)
+            self.assertEqual(acknowledgments, [True])
+        self.assertTrue(json.loads(self.receipt.path.read_text())["receipt_write_failed"])
+
+    async def test_transient_allocation_ack_write_failure_records_history(self):
+        backend = FakeBackend(self.receipt)
+        save = self.receipt.save
+        failed_once = False
+        def fail_app_ack_once():
+            nonlocal failed_once
+            if not failed_once and self.receipt.data["allocation"]["app"] == "acknowledged":
+                failed_once = True
+                raise OSError("authored allocation receipt failure")
+            save()
+        with patch.object(self.receipt, "save", side_effect=fail_app_ack_once):
+            self.assertEqual(await control.preflight(self.receipt, backend, self.source), 1)
+        self.assertTrue(failed_once)
+        self.assertEqual(backend.stops, ["ap-owned"])
+        saved = json.loads(self.receipt.path.read_text())
+        self.assertEqual(saved["status"], "failed")
+        self.assertEqual(saved["cleanup"], "verified")
+        self.assertTrue(saved["receipt_write_failed"])
 
     async def test_receipt_write_failure_after_allocation_cannot_skip_cleanup(self):
         backend = FakeBackend(self.receipt)
