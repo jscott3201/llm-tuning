@@ -1,5 +1,10 @@
 # Serving the Gemma 4 family on vLLM + Modal
 
+For the separate pinned vLLM 0.30 QAT profile with required proxy auth, see
+[QAT pilot](QAT_PILOT.md) and `serve_31b_qat.py`. Its resource limits and default
+attention selection are documented there. The five legacy profiles below
+retain their existing vLLM 0.19.1 settings.
+
 Five Modal serve scripts, one per Gemma 4 size. Each exposes an
 OpenAI-compatible `/v1/chat/completions` endpoint behind a PUBLIC
 `*.modal.run` URL (the URL printed by `modal deploy`). The rest of the
@@ -47,10 +52,10 @@ The vLLM HTTP server binds `0.0.0.0` (hardcoded in
 `_common/vllm_common.build_serve_cmd`) so Modal's web ingress can reach
 it — do not change the host to `127.0.0.1` under Modal or routing fails.
 
-## Auth — your choice
+## Legacy profile authentication
 
-Endpoints are **public by default**. This folder does not implement
-auth. Two ways to lock one down, neither baked in:
+The five legacy endpoints are **public by default**. Their scripts do not
+require auth. Two ways to lock one down, neither baked in:
 
 - **Modal proxy auth (recommended):** pass `requires_proxy_auth=True`
   to the `@modal.web_server(...)` decorator. Modal enforces it at the
@@ -88,7 +93,10 @@ supports multimodal targets (SGLang's `FROZEN_KV_MTP` algorithm) and
 dynamic LoRA hot-swap via REST — see the dedicated `gemma4/` project.
 This folder is the vLLM runtime only.
 
-## The Gemma 4 attention-backend constraint (triton)
+## Legacy attention-backend notes (vLLM 0.19.1)
+
+These notes describe the older profiles. The pinned QAT pilot uses vLLM 0.30's
+default backend selection, as described in [its guide](QAT_PILOT.md).
 
 Gemma 4 fixes `head_dim=256` (explicit in config, **not**
 `hidden_size / num_attention_heads`) and uses a hybrid local/global

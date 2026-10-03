@@ -144,6 +144,8 @@ def build_serve_cmd(
     speculative_config: dict | None = None,
     kv_cache_dtype: str | None = None,
     max_num_seqs: int | None = None,
+    revision: str | None = None,
+    tokenizer_revision: str | None = None,
     api_key_env: str | None = "API_KEY",
     extra_args: list[str] | None = None,
 ) -> list[str]:
@@ -206,6 +208,8 @@ def build_serve_cmd(
       Auth is your choice — Modal endpoints are public by default and
       can instead be locked down at the ingress with proxy auth; see
       modal.com/docs/guide/webhook-proxy-auth.
+    - `revision` and `tokenizer_revision` pin the model and tokenizer
+      independently. Omit both to retain the legacy upstream defaults.
     - `extra_args`: forwarded verbatim. Use this for size-specific
       flags like `--tensor-parallel-size N`, `--mm-processor-kwargs`,
       `--limit-mm-per-prompt`, `--chat-template <path>`, or LoRA
@@ -264,6 +268,12 @@ def build_serve_cmd(
     if max_num_seqs is not None:
         cmd += ["--max-num-seqs", str(max_num_seqs)]
 
+    if revision is not None:
+        cmd += ["--revision", revision]
+
+    if tokenizer_revision is not None:
+        cmd += ["--tokenizer-revision", tokenizer_revision]
+
     if api_key_env and os.environ.get(api_key_env):
         cmd += ["--api-key", os.environ[api_key_env]]
 
@@ -271,6 +281,36 @@ def build_serve_cmd(
         cmd += extra_args
 
     return cmd
+
+
+def start_serve(cmd: list[str], *, timeout_s: int = 600, label: str = "vllm"):
+    """Start a server and join its original child on every startup failure.
+
+    Successful readiness leaves the server running for Modal's web endpoint.
+    Modal owns container shutdown after this function returns; this helper
+    does not establish post-readiness shutdown or descendant-process cleanup.
+    Legacy profiles may continue to call `wait_for_health` directly.
+    """
+    import subprocess
+
+    proc = subprocess.Popen(cmd)
+    try:
+        wait_for_health(proc, timeout_s=timeout_s, label=label)
+    except BaseException:
+        # The health helper may already have terminated/killed the child.
+        # Reap it even then, including its timeout path and local interruption.
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+            except ProcessLookupError:
+                pass
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        raise
+    return proc
 
 
 # ─────────────────────────────────────────────────────────────────────
