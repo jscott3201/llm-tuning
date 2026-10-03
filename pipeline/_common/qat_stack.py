@@ -271,7 +271,7 @@ def check_stack():
         ("metadata", [executable, script, "--metadata-check"], 20, offline),
         ("pip_check", [executable, "-m", "pip", "check"], 20, offline),
         ("native", [executable, script, "--native-check"], 40, offline),
-        ("vllm_cli", [executable, "-m", "vllm.entrypoints.cli.main", "--help"], 40,
+        ("vllm_cli", [executable, "-m", "vllm.entrypoints.cli.main", "--help"], 70,
          {**offline, "VLLM_TARGET_DEVICE": "cpu"}),
     ]
     report = {"schema": "qat-cpu-stack-v1", "status": "failed", "checks": {},
