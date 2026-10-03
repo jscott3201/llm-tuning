@@ -251,12 +251,17 @@ class PolicyTests(unittest.TestCase):
             actual = subprocess.run([sys.executable, "-m", "parser_control.main", "--help"],
                                     cwd=directory, capture_output=True, text=True, timeout=3)
         self.assertEqual(actual.returncode, 0, actual.stderr)
-        self.assertTrue(actual.stdout.startswith("usage: main.py "), actual.stdout)
+        # Python 3.14 includes the interpreter and -m module in default prog.
+        # The serving image stays pinned to 3.12; newer host output must not
+        # weaken its guard contract or make this independent control fail.
+        modern_prog = sys.version_info >= (3, 14)
+        expected_prog = f"{Path(sys.executable).name} -m parser_control.main" if modern_prog else "main.py"
+        self.assertTrue(actual.stdout.startswith(f"usage: {expected_prog} "), actual.stdout)
         children = [self.child('{"status":"passed"}'), self.child("No broken requirements found."),
                     self.child('{"status":"passed"}'), self.child(actual.stdout, stderr=actual.stderr)]
         with patch.object(guard, "run_child", side_effect=children):
             result = guard.check_stack()
-        self.assertEqual(result["status"], "passed", result["checks"]["vllm_cli"])
+        self.assertEqual(result["status"], "failed" if modern_prog else "passed", result["checks"]["vllm_cli"])
 
     def test_pip_conflict_is_retained_and_only_exact_override_is_accepted(self):
         row = {"package": "torch", "package_version": "2.13.0+cu129", "dependency": "nvidia-nccl-cu12",
