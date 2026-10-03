@@ -62,6 +62,12 @@ def repair_plan(versions, override, constraints):
         if versions.get(name) not in allowed:
             raise RuntimeError(f"unrecognized retained package: {name}")
     old = []
+    # This profile does not enable LMCache's optional KV connector. Its known
+    # CUDA 13 build conflicts with the restored CUDA Python 12 package pair.
+    if "lmcache" in versions:
+        if versions["lmcache"] != "0.5.5":
+            raise RuntimeError("unrecognized optional LMCache version")
+        old.append("lmcache")
     for name, specifier in sorted(OLD_NATIVE.items()):
         if name in versions:
             if versions[name] not in SpecifierSet(specifier):
@@ -83,7 +89,7 @@ def repair_plan(versions, override, constraints):
 def constraints_text(versions):
     """Pin owned changes and hold every other installed distribution unchanged."""
     retained = {name: version for name, version in versions.items()
-                if name not in {*OLD_NATIVE, "torch", "cuda-bindings", *OWNED_VERSIONS}}
+                if name not in {*OLD_NATIVE, "torch", "lmcache", "cuda-bindings", *OWNED_VERSIONS}}
     retained.update(OWNED_VERSIONS)
     return "".join(f"{name}=={version}\n" for name, version in sorted(retained.items()))
 
