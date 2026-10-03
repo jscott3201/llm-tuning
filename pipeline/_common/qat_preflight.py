@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 import sys
 
-from _common.qat_preflight_io import finish, run_local
+from _common.qat_preflight_io import CHECK_FAILURE_REASONS, CHECK_STAGES, finish, run_local
 from _common.qat_preflight_receipt import LIMITS, identity
 
 WORKER = str(Path(__file__).with_name("qat_preflight_worker.py"))
@@ -111,7 +111,7 @@ def owned_app(rows, receipt):
 def sanitized_result(result):
     """Whitelist worker summary fields so receipts never retain raw diagnostics."""
     allowed = {"remote_exit_code", "streams_complete", "stream_bytes", "stream_sha256",
-               "validator_passed", "reason", "checks"}
+               "validator_passed", "validator_report_status", "reason", "checks"}
     if not isinstance(result, dict) or set(result) - allowed or type(result.get("validator_passed")) is not bool:
         raise ValueError("invalid_worker_result")
     if result.get("remote_exit_code") is not None and type(result["remote_exit_code"]) is not int:
@@ -131,19 +131,51 @@ def sanitized_result(result):
             raise ValueError("invalid_worker_output_size")
         if re.fullmatch(r"[0-9a-f]{64}", result["stream_sha256"][name]) is None:
             raise ValueError("invalid_worker_output_hash")
+    report_status = result.get("validator_report_status")
+    if report_status not in {"unknown", "passed", "failed"}:
+        raise ValueError("invalid_worker_report_status")
     checks = result.get("checks", {})
-    if not isinstance(checks, dict) or set(checks) - {"metadata", "pip_check", "native", "vllm_cli"}:
+    if not isinstance(checks, dict) or set(checks) != set(CHECK_STAGES[:len(checks)]):
         raise ValueError("invalid_worker_checks")
-    for name, check in checks.items():
-        if not isinstance(check, dict) or set(check) - {"status", "exit_code", "policy_status"}:
+    if report_status == "unknown":
+        if checks or result["validator_passed"] or result.get("reason") is None:
+            raise ValueError("contradictory_unknown_report")
+        return result
+    expected_code = 0 if report_status == "passed" else 1
+    expected_reason = None if report_status == "passed" else "remote_nonzero"
+    if (result["validator_passed"] != (report_status == "passed")
+            or result.get("remote_exit_code") != expected_code or result.get("reason") != expected_reason
+            or not all(result["streams_complete"].values()) or not checks
+            or (report_status == "passed" and len(checks) != len(CHECK_STAGES))):
+        raise ValueError("contradictory_worker_report")
+    for index, name in enumerate(CHECK_STAGES[:len(checks)]):
+        check = checks[name]
+        if not isinstance(check, dict) or set(check) - {"status", "exit_code", "policy_status", "reason", "rejection_kind"}:
             raise ValueError("invalid_worker_check")
-        if check.get("status") not in {"passed", "failed"} or type(check.get("exit_code")) is not int:
+        status, code, reason = check.get("status"), check.get("exit_code"), check.get("reason")
+        if (status not in {"passed", "failed"} or "exit_code" not in check
+                or (code is not None and type(code) is not int) or (reason is not None and reason not in CHECK_FAILURE_REASONS)):
             raise ValueError("invalid_worker_check_status")
-        if "policy_status" in check and check["policy_status"] != "passed":
+        if "policy_status" in check and (name != "pip_check" or check["policy_status"] not in {"passed", "failed"}):
             raise ValueError("invalid_worker_check_policy")
-    if result["validator_passed"] and (result.get("reason") is not None or result.get("remote_exit_code") != 0
-            or not all(result["streams_complete"].values()) or set(checks) != {"metadata", "pip_check", "native", "vllm_cli"}):
-        raise ValueError("incomplete_worker_success")
+        failed = report_status == "failed" and index == len(checks) - 1
+        if not failed:
+            ordinary = status == "passed" and code == 0 and reason is None
+            override = name == "pip_check" and status == "failed" and code == 1 and reason == "nonzero_exit"
+            if not (ordinary or override) or (name == "pip_check" and check.get("policy_status") != "passed"):
+                raise ValueError("invalid_worker_passed_stage")
+        else:
+            policy_failure = (name == "pip_check" and status == "passed" and code == 0
+                              and reason == "dependency_policy_rejected")
+            if (not policy_failure and (status != "failed" or reason not in CHECK_FAILURE_REASONS - {"dependency_policy_rejected"})
+                    or (name == "pip_check" and check.get("policy_status") != "failed")
+                    or (reason == "nonzero_exit" and (code is None or code == 0))
+                    or (reason in {"check_rejected", "invalid_check_output"} and (name not in {"metadata", "native"} or code != 0))
+                    or (reason == "expected_help_missing" and (name != "vllm_cli" or code != 0))):
+                raise ValueError("invalid_worker_failed_stage")
+        if "rejection_kind" in check and (not failed or name != "metadata" or check["rejection_kind"] != "metadata_mismatch"
+                or (reason, code) not in {("nonzero_exit", 1), ("check_rejected", 0)}):
+            raise ValueError("invalid_worker_rejection_kind")
     return result
 
 

@@ -75,7 +75,7 @@ async def run_preflight(config, sdk, acknowledge):
                 async for chunk in stream:
                     yield chunk
             finally:
-                await stream.aclose.aio()
+                await stream.aclose()
         class RawProcess:
             stdout = raw_stream(process.stdout)
             stderr = raw_stream(process.stderr)
