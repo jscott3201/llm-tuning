@@ -207,7 +207,9 @@ class PolicyTests(unittest.TestCase):
                 self.assertEqual(guard.check_stack()["status"], "failed")
 
     def test_cpu_platform_is_scoped_to_cli_child_and_expected_help_is_required(self):
-        for help_text, expected in (("usage: vllm [-h] {serve,chat}", "passed"), ("", "failed")):
+        for help_text, expected in (("usage: main.py [-h] {serve,chat}", "passed"),
+                                    ("usage: vllm [-h] {serve,chat}", "failed"),
+                                    ("usage: main.py [-h] {chat}", "failed"), ("", "failed")):
             children = [self.child('{"status":"passed"}'), self.child("No broken requirements found."),
                         self.child('{"status":"passed"}'), self.child(help_text)]
             with patch.dict("os.environ", {}, clear=True), patch.object(guard, "run_child", side_effect=children) as run:
@@ -219,6 +221,28 @@ class PolicyTests(unittest.TestCase):
             self.assertEqual(final.kwargs["environment"]["VLLM_TARGET_DEVICE"], "cpu")
             self.assertEqual(final.args[0][1:], ["-m", "vllm.entrypoints.cli.main", "--help"])
 
+
+    def test_actual_module_help_is_accepted_with_python_argv0(self):
+        # The pinned CLI constructs ArgumentParser without prog. Exercise that
+        # Python module-launch contract independently, without importing vLLM.
+        with tempfile.TemporaryDirectory() as directory:
+            package = Path(directory) / "parser_control"
+            package.mkdir()
+            (package / "__init__.py").touch()
+            (package / "main.py").write_text(
+                "import argparse\n"
+                "parser = argparse.ArgumentParser()\n"
+                "parser.add_subparsers().add_parser('serve')\n"
+                "parser.parse_args()\n")
+            actual = subprocess.run([sys.executable, "-m", "parser_control.main", "--help"],
+                                    cwd=directory, capture_output=True, text=True, timeout=3)
+        self.assertEqual(actual.returncode, 0, actual.stderr)
+        self.assertTrue(actual.stdout.startswith("usage: main.py "), actual.stdout)
+        children = [self.child('{"status":"passed"}'), self.child("No broken requirements found."),
+                    self.child('{"status":"passed"}'), self.child(actual.stdout, stderr=actual.stderr)]
+        with patch.object(guard, "run_child", side_effect=children):
+            result = guard.check_stack()
+        self.assertEqual(result["status"], "passed", result["checks"]["vllm_cli"])
 
     def test_pip_conflict_is_retained_and_only_exact_override_is_accepted(self):
         row = {"package": "torch", "package_version": "2.13.0+cu129", "dependency": "nvidia-nccl-cu12",
@@ -232,7 +256,7 @@ class PolicyTests(unittest.TestCase):
             with self.subTest(change=change):
                 self.assertFalse(guard.pip_policy({**conflict, **change}, [row]))
         children = [self.child(json.dumps({"status": "passed", "declared_dependency_overrides": [row]})),
-                    conflict.copy(), self.child('{"status":"passed"}'), self.child("usage: vllm {serve}")]
+                    conflict.copy(), self.child('{"status":"passed"}'), self.child("usage: main.py {serve}")]
         with patch.object(guard, "run_child", side_effect=children):
             report = guard.check_stack()
         self.assertEqual(report["status"], "passed")

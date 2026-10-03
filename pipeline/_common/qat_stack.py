@@ -257,7 +257,9 @@ def check_stack():
             continue
         if outcome["status"] == "passed":
             if name == "vllm_cli":
-                if "usage: vllm" not in outcome["stdout"] or "serve" not in outcome["stdout"]:
+                # Python -m sets argv[0] to main.py; the pinned parser uses
+                # argparse's default prog rather than the console-script name.
+                if not outcome["stdout"].startswith("usage: main.py ") or "serve" not in outcome["stdout"]:
                     outcome.update(status="failed", reason="expected_help_missing")
             else:
                 try:
