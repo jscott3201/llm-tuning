@@ -118,6 +118,9 @@ class ModelSpec:
 
     notes: str = ""
 
+    revision: str | None = None
+    """Immutable model/tokenizer revision when a profile pins both to one release."""
+
 
 REGISTRY: dict[str, ModelSpec] = {
     "e2b": ModelSpec(
@@ -263,6 +266,22 @@ REGISTRY: dict[str, ModelSpec] = {
             "(192 GiB) fits comfortably without TP, which is what we "
             "use here. MTP drafter is 470M params (largest of the "
             "family) and benefits from `num_speculative_tokens` up to 8."
+        ),
+    ),
+    "31b-qat": ModelSpec(
+        short="31b-qat",
+        hf_repo="google/gemma-4-31B-it-qat-w4a16-ct",
+        revision="52f3f65bc7a02d555763bc923bd1d9094898219d",
+        gpu="H100!",
+        max_model_len=32_768,
+        max_num_batched_tokens=16_384,
+        gpu_memory_utilization=0.90,
+        concurrency=1,
+        is_moe=False,
+        notes=(
+            "Pinned compressed-tensors QAT release for the vLLM 0.30 pilot. "
+            "Text only, TP1, default attention and KV dtype; GPU fit remains "
+            "unqualified. No drafter or custom chat template."
         ),
     ),
 }
