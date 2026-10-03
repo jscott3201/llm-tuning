@@ -1,12 +1,16 @@
 """Build-only repair for the selected vLLM image; never used by serving processes."""
 from __future__ import annotations
 
-import importlib.metadata as metadata
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+
+if __package__:
+    from .qat_stack import active_distributions
+else:
+    from qat_stack import active_distributions
 
 PYTHON = "/usr/bin/python3.12"
 TORCH_URL = (
@@ -86,14 +90,9 @@ def resolver_environment(environment):
 
 def main():
     """Repair only the known base; the separate validator certifies CPU behavior."""
-    from packaging.utils import canonicalize_name
-
     if os.path.realpath(sys.executable) != PYTHON or sys.version_info[:2] != (3, 12) or sys.prefix != sys.base_prefix:
         raise RuntimeError("repair requires the image's system Python 3.12")
-    distributions = list(metadata.distributions())
-    versions = {canonicalize_name(dist.metadata["Name"]): dist.version for dist in distributions}
-    if len(versions) != len(distributions):
-        raise RuntimeError("duplicate installed distribution identities")
+    versions = {name: dist.version for name, dist in active_distributions().items()}
     with tempfile.TemporaryDirectory(prefix="qat-stack-") as directory:
         override, constraints = Path(directory) / "override.txt", Path(directory) / "constraints.txt"
         # vLLM intentionally uses NCCL >=2.30.4 for DeepEP v2 GIN. Preserve its

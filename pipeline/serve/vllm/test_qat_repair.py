@@ -1,7 +1,14 @@
-"""Plan-only repair tests: no installers, downloads or cloud clients are run."""
+"""Offline repair tests: no installers, downloads or cloud clients are run."""
+import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
 import sys
+import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 PIPELINE = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PIPELINE))
@@ -68,6 +75,88 @@ class RepairTests(unittest.TestCase):
                        "SSL_CERT_FILE": "/certificates"}
         self.assertEqual(repair.resolver_environment(environment),
                          {"PATH": "/usr/bin", "SSL_CERT_FILE": "/certificates"})
+
+
+class RepairEntrypointTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.local, self.system = self.root / "local", self.root / "system"
+        self.local.mkdir()
+        self.system.mkdir()
+        for name, version in base_versions().items():
+            self.write(self.local, name, version)
+        self.write(self.local, "six", "1.17.0")
+        self.write(self.system, "six", "1.16.0")
+        self.write(self.system, "six", "1.16.0", egg=True)
+        self.write(self.system, "torch", "2.13.0+cu129")
+
+    def write(self, root, name, version, *, egg=False):
+        directory = root / (f"{name.replace('-', '_')}-{version}" + (".egg-info" if egg else ".dist-info"))
+        directory.mkdir()
+        (directory / ("PKG-INFO" if egg else "METADATA")).write_text(
+            f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n")
+
+    def call_main(self, run):
+        runtime = SimpleNamespace(executable=repair.PYTHON, version_info=(3, 12), prefix="system", base_prefix="system")
+        with patch.object(sys, "path", [str(self.local), str(self.system), *sys.path]), \
+                patch.object(repair, "sys", runtime), patch.object(repair.subprocess, "run", side_effect=run):
+            repair.main()
+
+    def test_main_uses_active_versions_for_plan_and_constraints(self):
+        calls = []
+        def run(argv, **kwargs):
+            calls.append(argv)
+            self.assertTrue(kwargs["check"])
+            self.assertEqual(kwargs["timeout"], 900)
+            if "--constraint" in argv:
+                text = Path(argv[argv.index("--constraint") + 1]).read_text()
+                self.assertIn("six==1.17.0\n", text)
+                self.assertNotIn("six==1.16.0\n", text)
+                self.assertIn("optional-native==7.1\n", text)
+                self.assertIn("cuda-toolkit==12.9.1\n", text)
+                self.assertEqual(argv, repair.repair_plan(base_versions(),
+                    argv[argv.index("--override") + 1], argv[argv.index("--constraint") + 1])[1])
+        self.call_main(run)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0], repair.repair_plan(base_versions(), "/unused", "/unused")[0])
+
+    def test_winning_root_ambiguity_fails_before_subprocess_mutation(self):
+        self.write(self.local, "six", "1.18.0")
+        calls = []
+        with self.assertRaisesRegex(RuntimeError, "ambiguous"):
+            self.call_main(lambda *args, **kwargs: calls.append(args))
+        self.assertEqual(calls, [])
+
+    def test_standalone_script_imports_sibling_and_uses_same_active_constraints(self):
+        # Copy the two files exactly as the image does; run the actual entrypoint.
+        scripts = self.root / "opt-qat"
+        scripts.mkdir()
+        for name in ("qat_repair.py", "qat_stack.py"):
+            shutil.copyfile(PIPELINE / "_common" / name, scripts / name)
+        hooks = self.root / "hooks"
+        hooks.mkdir()
+        (hooks / "sitecustomize.py").write_text(
+            "import sys, subprocess, json\nfrom pathlib import Path\n"
+            "sys.executable = '/usr/bin/python3.12'\nsys.version_info = (3, 12)\n"
+            "sys.prefix = sys.base_prefix\nsys.modules['torch'] = None\nsys.modules['modal'] = None\n"
+            "def run(argv, **kwargs):\n"
+            "    assert argv[:3] == ['uv', '--no-config', 'pip']\n"
+            "    assert kwargs['check'] is True and kwargs['timeout'] == 900\n"
+            "    text = Path(argv[argv.index('--constraint') + 1]).read_text() if '--constraint' in argv else None\n"
+            "    print(json.dumps({'command': argv, 'constraints': text}))\n"
+            "subprocess.run = run\n")
+        environment = {**os.environ, "PYTHONPATH": os.pathsep.join(map(str, (self.local, self.system, hooks)))}
+        result = subprocess.run([sys.executable, str(scripts / "qat_repair.py")], env=environment,
+                                cwd=self.root, text=True, capture_output=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["command"], repair.repair_plan(base_versions(), "/unused", "/unused")[0])
+        self.assertIn("six==1.17.0\n", rows[1]["constraints"])
+        self.assertNotIn("six==1.16.0\n", rows[1]["constraints"])
+        self.assertEqual(rows[1]["command"][-1], repair.TORCH_URL)
 
 
 if __name__ == "__main__":
