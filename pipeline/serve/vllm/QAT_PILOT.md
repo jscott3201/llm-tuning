@@ -136,6 +136,11 @@ at their original paths during the attempt.
 | Retained validator stdout / stderr | 32,768 / 8,192 bytes |
 | Validator source transfer | At most 65,536 bytes, checked by size and SHA256 |
 
+The CLI-help child has a 70-second deadline to allow for variable import time.
+The whole Sandbox remains limited to 90 seconds, so startup and earlier checks
+can leave the CLI child less than 70 seconds. The 180-second client budget,
+45-second cleanup reserve, one CPU and 4 GiB memory limits remain unchanged.
+
 The Sandbox has no GPU, secrets, cache volumes, published ports, PTY or OIDC
 identity token, and network access is blocked. A quiet entrypoint keeps the
 Sandbox available for a non-PTY exec whose raw stdout/stderr are drained
