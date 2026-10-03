@@ -22,14 +22,46 @@ DEPENDENCY_OVERRIDES = frozenset({
 })
 
 
-def dependency_report(distributions, environment):
+def active_distributions(paths=None):
+    """Select unambiguous filesystem metadata in Python search-path order."""
+    from packaging.utils import canonicalize_name
+    from packaging.version import Version
+
+    roots = list(dict.fromkeys(Path(path).resolve() for path in (sys.path if paths is None else paths)))
+    selected = {}
+    for root in roots:
+        candidates = {}
+        for dist in metadata.distributions(path=[str(root)]):
+            name, version = dist.metadata.get("Name"), dist.metadata.get("Version")
+            if not isinstance(name, str) or not isinstance(version, str):
+                raise RuntimeError("distribution metadata missing Name or Version")
+            name = canonicalize_name(name, validate=True)
+            Version(version)
+            if Path(dist.locate_file("")).resolve() != root:
+                raise RuntimeError("distribution metadata has inconsistent search-root provenance")
+            candidates.setdefault(name, []).append(dist)
+        for name, records in candidates.items():
+            if name in selected:
+                continue
+            if len(records) != 1:
+                raise RuntimeError(f"ambiguous active distribution metadata: {name}")
+            selected[name] = records[0]
+    # Name-based lookup drives the native checks too. Reject metadata whose
+    # directory identity or finder behavior disagrees with its declared name.
+    for name, dist in selected.items():
+        winner = next(iter(metadata.distributions(name=name, path=[str(root) for root in roots])), None)
+        if (winner is None or winner.metadata.get("Name") != dist.metadata.get("Name")
+                or winner.version != dist.version or winner.requires != dist.requires
+                or Path(winner.locate_file("")).resolve() != Path(dist.locate_file("")).resolve()):
+            raise RuntimeError(f"inconsistent active distribution lookup: {name}")
+    return selected
+
+
+def dependency_report(installed, environment):
     """Check active requirements and separately report exact declared exceptions."""
     from packaging.requirements import Requirement
     from packaging.utils import canonicalize_name
 
-    installed = {canonicalize_name(dist.metadata["Name"]): dist for dist in distributions}
-    if len(installed) != len(distributions):
-        raise RuntimeError("duplicate installed distribution identities")
     # Propagate requested extras: Torch activates cuda-toolkit's component pins.
     extras = {name: {""} for name in installed}
     requirements = {name: [Requirement(text) for text in dist.requires or []]
@@ -63,14 +95,13 @@ def dependency_report(distributions, environment):
     return issues, overrides
 
 
-def metadata_check():
+def metadata_check(*, paths=None):
     """Reject unexpected selected packages and incompatible active dependencies."""
     from packaging.markers import default_environment
-    from packaging.utils import canonicalize_name
 
-    distributions = list(metadata.distributions())
-    versions = {canonicalize_name(dist.metadata["Name"]): dist.version for dist in distributions}
-    selected = {name: versions.get(name) for name in (*EXPECTED_VERSIONS, "transformers")}
+    installed = active_distributions(paths)
+    selected = {name: installed[name].version if name in installed else None
+                for name in (*EXPECTED_VERSIONS, "transformers")}
     mismatches = []
     for name, expected in EXPECTED_VERSIONS.items():
         actual = selected[name] or ""
@@ -79,7 +110,7 @@ def metadata_check():
             mismatches.append({"package": name, "expected": expected + "+cu129", "actual": actual})
     if selected["transformers"] is None:
         mismatches.append({"package": "transformers", "expected": "installed", "actual": None})
-    issues, overrides = dependency_report(distributions, default_environment())
+    issues, overrides = dependency_report(installed, default_environment())
     return {"status": "failed" if mismatches or issues else "passed", "versions": selected,
             "version_mismatches": mismatches, "dependency_issue_count": len(issues),
             "dependency_issues": issues[:16], "dependency_issues_truncated": len(issues) > 16,

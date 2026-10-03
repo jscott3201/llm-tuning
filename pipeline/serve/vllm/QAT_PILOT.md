@@ -67,6 +67,13 @@ NCCL conflict can pass the declared policy while its actual pip exit code 1
 remains visible in the report. A passing CPU report still leaves GPU serving,
 model loading, attention kernels and generation correctness unqualified.
 
+Metadata selection follows Python's search-path precedence. One selected record
+per canonical package name supplies both its version and dependency requirements,
+including activated extras. Lower-priority OS package records may be shadowed;
+multiple records for a package in its winning directory fail as ambiguous.
+Malformed names or versions and inconsistent metadata provenance or name lookup
+also fail the check. The guard does not remove OS metadata or change `sys.path`.
+
 An offline SDK import validates these declarations without building the image.
 The repair and CPU guard still require an actual authorized image build and
 Function-creation check before they can be treated as live qualification.

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import redirect_stdout
+from packaging.utils import canonicalize_name
 import io
 import json
 from pathlib import Path, PurePosixPath
@@ -22,6 +23,10 @@ def distribution(name, version, requires=()):
     return SimpleNamespace(metadata={"Name": name}, version=version, requires=list(requires))
 
 
+def installed_map(distributions):
+    return {canonicalize_name(dist.metadata["Name"]): dist for dist in distributions}
+
+
 def good_distributions():
     return [distribution("torch", "2.13.0+cu129"),
             distribution("torchvision", "0.28.0+cu129", ["torch==2.13.0"]),
@@ -33,7 +38,7 @@ class DependencyTests(unittest.TestCase):
     def test_confirmed_torch_mismatch_fails_with_both_dependents(self):
         installed = good_distributions()
         installed[0] = distribution("torch", "2.14.0")
-        with patch.object(guard.metadata, "distributions", return_value=installed):
+        with patch.object(guard, "active_distributions", return_value=installed_map(installed)):
             result = guard.metadata_check()
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["version_mismatches"][0]["actual"], "2.14.0")
@@ -42,14 +47,14 @@ class DependencyTests(unittest.TestCase):
     def test_cuda_build_and_missing_packages_fail(self):
         for installed in (good_distributions()[1:],
                           [distribution("torch", "2.13.0+cu130"), *good_distributions()[1:]]):
-            with self.subTest(installed=installed), patch.object(guard.metadata, "distributions", return_value=installed):
+            with self.subTest(installed=installed), patch.object(guard, "active_distributions", return_value=installed_map(installed)):
                 self.assertEqual(guard.metadata_check()["status"], "failed")
 
     def test_active_requirements_are_checked_but_unselected_extras_are_not(self):
         installed = [distribution("owner", "1", [
             'missing-extra; extra == "optional"', 'missing-platform; platform_system == "Windows"',
             'present>=2; platform_system == "Linux"']), distribution("present", "1")]
-        issues, overrides = guard.dependency_report(installed, {"platform_system": "Linux"})
+        issues, overrides = guard.dependency_report(installed_map(installed), {"platform_system": "Linux"})
         self.assertEqual([row["dependency"] for row in issues], ["present"])
         self.assertEqual(overrides, [])
 
@@ -57,40 +62,150 @@ class DependencyTests(unittest.TestCase):
         installed = [distribution("owner", "1", ["dependency==2"]), distribution("dependency", "3")]
         exact = frozenset({("owner", "1", "dependency", "==2", "3")})
         with patch.object(guard, "DEPENDENCY_OVERRIDES", exact):
-            issues, overrides = guard.dependency_report(installed, {})
+            issues, overrides = guard.dependency_report(installed_map(installed), {})
             self.assertEqual(issues, [])
             self.assertEqual(len(overrides), 1)
             installed[1] = distribution("dependency", "4")
-            issues, overrides = guard.dependency_report(installed, {})
+            issues, overrides = guard.dependency_report(installed_map(installed), {})
         self.assertEqual(len(issues), 1)
         self.assertEqual(overrides, [])
 
     def test_matching_metadata_passes_without_importing_torch(self):
-        with patch.object(guard.metadata, "distributions", return_value=good_distributions()):
+        with patch.object(guard, "active_distributions", return_value=installed_map(good_distributions())):
             self.assertEqual(guard.metadata_check()["status"], "passed")
 
     def test_requested_extras_propagate_through_dependencies(self):
         installed = [distribution("torch", "1", ["cuda-toolkit[cublas]==2"]),
                      distribution("cuda-toolkit", "2", ['nvidia-cublas-cu12==3; extra == "cublas"']),
                      distribution("nvidia-cublas-cu12", "4")]
-        issues, overrides = guard.dependency_report(installed, {})
+        issues, overrides = guard.dependency_report(installed_map(installed), {})
         self.assertEqual([row["dependency"] for row in issues], ["nvidia-cublas-cu12"])
         self.assertEqual(overrides, [])
 
     def test_only_shipped_nccl_exception_is_reported_as_override(self):
         installed = [distribution("torch", "2.13.0+cu129", ["nvidia-nccl-cu12==2.29.7"]),
                      distribution("nvidia-nccl-cu12", "2.30.7")]
-        issues, overrides = guard.dependency_report(installed, {})
+        issues, overrides = guard.dependency_report(installed_map(installed), {})
         self.assertEqual(issues, [])
         self.assertEqual(len(overrides), 1)
         installed[1].version = "2.30.8"
-        issues, overrides = guard.dependency_report(installed, {})
+        issues, overrides = guard.dependency_report(installed_map(installed), {})
         self.assertEqual(len(issues), 1)
         self.assertEqual(overrides, [])
 
-    def test_duplicate_distribution_identity_is_rejected(self):
-        with self.assertRaisesRegex(RuntimeError, "duplicate"):
-            guard.dependency_report([distribution("same-name", "1"), distribution("same_name", "2")], {})
+
+class ActiveDistributionTests(unittest.TestCase):
+    """Use real filesystem metadata, including OS-style egg-info records."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.local = Path(directory.name) / "local"
+        self.system = Path(directory.name) / "system"
+        self.local.mkdir()
+        self.system.mkdir()
+        self.paths = [str(self.local), str(self.system)]
+        for dist in good_distributions():
+            self.write(self.local, dist.metadata["Name"], dist.version, dist.requires)
+
+    def write(self, root, name, version, requires=(), *, egg=False, filename=None):
+        stem = filename or f"{name.replace('-', '_')}-{version}"
+        record = root / (stem + (".egg-info" if egg else ".dist-info"))
+        record.mkdir()
+        text = f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n"
+        text += "".join(f"Requires-Dist: {requirement}\n" for requirement in requires)
+        (record / ("PKG-INFO" if egg else "METADATA")).write_text(text)
+        return record
+
+    def check(self):
+        return guard.metadata_check(paths=self.paths)
+
+    def test_active_local_metadata_wins_over_shadowed_os_records(self):
+        self.write(self.local, "Example_Package", "2", ["six==1.17"])
+        self.write(self.local, "six", "1.17")
+        self.write(self.system, "example-package", "1", ["absent==1"])
+        self.write(self.system, "example-package", "1", ["absent==1"], egg=True)
+        self.write(self.system, "six", "1.16", egg=True)
+        self.assertEqual(self.check()["status"], "passed")
+
+    def test_wrong_active_torch_is_not_hidden_by_correct_shadow(self):
+        record = self.local / "torch-2.13.0+cu129.dist-info" / "METADATA"
+        record.write_text("Metadata-Version: 2.1\nName: torch\nVersion: 2.14.0\n")
+        self.write(self.system, "torch", "2.13.0+cu129")
+        result = self.check()
+        self.assertEqual(result["versions"]["torch"], "2.14.0")
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual({row["package"] for row in result["dependency_issues"]}, {"torchvision", "vllm"})
+
+    def test_wrong_active_nccl_cannot_use_shadowed_exception(self):
+        record = self.local / "torch-2.13.0+cu129.dist-info" / "METADATA"
+        record.write_text(record.read_text() + "Requires-Dist: nvidia-nccl-cu12==2.29.7\n")
+        self.write(self.local, "nvidia-nccl-cu12", "2.30.8")
+        self.write(self.system, "nvidia-nccl-cu12", "2.30.7")
+        result = self.check()
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["declared_dependency_overrides"], [])
+        self.assertEqual(result["dependency_issues"][0]["installed"], "2.30.8")
+
+    def test_multiple_winning_root_records_are_ambiguous_even_at_equal_versions(self):
+        for name, version in (("same-version", "1"), ("different-version", "2")):
+            with self.subTest(name=name):
+                self.write(self.local, name, "1")
+                self.write(self.local, name, version, egg=True)
+                with self.assertRaisesRegex(RuntimeError, "ambiguous"):
+                    self.check()
+                for record in self.local.glob(name.replace("-", "_") + "-*"):
+                    for file in record.iterdir():
+                        file.unlink()
+                    record.rmdir()
+
+    def test_only_selected_owners_activate_requirements_and_extras(self):
+        self.write(self.local, "owner", "1", ["toolkit[active]==1"])
+        self.write(self.system, "owner", "9", ["toolkit[shadow]==9"])
+        self.write(self.local, "toolkit", "1", ['component==2; extra == "active"',
+                                                  'shadow-only==1; extra == "shadow"'])
+        self.write(self.system, "toolkit", "9", ["shadow-only==1"])
+        self.write(self.local, "component", "1")
+        self.write(self.system, "component", "2")
+        result = self.check()
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["dependency_issues"], [{"package": "toolkit", "package_version": "1",
+                         "dependency": "component", "required": "==2", "installed": "1"}])
+
+    def test_repeated_and_symlink_roots_do_not_create_duplicate_records(self):
+        alias = self.local.parent / "alias"
+        alias.symlink_to(self.local, target_is_directory=True)
+        self.paths = [str(self.local), str(alias), str(self.local), str(self.system)]
+        self.assertEqual(self.check()["status"], "passed")
+
+    def test_invalid_metadata_including_shadowed_records_fails(self):
+        self.write(self.local, "bad", "2")
+        for text in ("Name: invalid name\nVersion: 1\n", "Name: bad\nVersion: invalid\n",
+                     "Name: bad\n", "Version: 1\n"):
+            with self.subTest(text=text):
+                record = self.system / "bad-1.dist-info"
+                record.mkdir(exist_ok=True)
+                (record / "METADATA").write_text(text)
+                with self.assertRaises((ValueError, RuntimeError, TypeError)):
+                    self.check()
+
+    def test_metadata_name_must_agree_with_name_based_lookup(self):
+        self.write(self.local, "actual-name", "1", filename="different_name-1")
+        with self.assertRaisesRegex(RuntimeError, "inconsistent active distribution lookup"):
+            self.check()
+
+    def test_foreign_provenance_and_discovery_errors_are_checker_failures(self):
+        dist = next(guard.metadata.distributions(path=[str(self.local)]))
+        with patch.object(guard.metadata, "distributions", return_value=[dist]):
+            with self.assertRaisesRegex(RuntimeError, "provenance"):
+                guard.metadata_check(paths=[str(self.system)])
+        with patch.object(guard.metadata, "distributions", side_effect=OSError("authored discovery error")):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(guard.main(["--metadata-check"]), 1)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("authored discovery error", result["error"])
 
 
 class NativeTests(unittest.TestCase):
