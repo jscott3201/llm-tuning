@@ -3,8 +3,10 @@ from __future__ import annotations
 
 from pathlib import Path
 import runpy
+import shlex
 import subprocess
 import sys
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -67,11 +69,41 @@ class QatProfileTests(unittest.TestCase):
         self.assertFalse(serve_31b_qat.serve.is_hydrated)
 
     def test_image_is_immutable_without_install_or_python_injection(self):
-        _, observed = recorded_profile()
+        profile, observed = recorded_profile()
         self.assertEqual(observed["image"], [
             ("registry", ("docker.io/vllm/vllm-openai:v0.30.0-cu129@sha256:"
-                           "58fdb6bb123a81aa53f46fa4652ad8cc87e817bd1077c9832c6258ef12c1c688",), {}),
+                           "58fdb6bb123a81aa53f46fa4652ad8cc87e817bd1077c9832c6258ef12c1c688",),
+             {"setup_dockerfile_commands": profile["PYTHON_SETUP"]}),
             ("entrypoint", []), ("source", "_common")])
+
+    def test_python_alias_preserves_same_interpreter_and_refuses_other_destinations(self):
+        profile, _ = recorded_profile()
+        with tempfile.TemporaryDirectory(prefix="qat-profile-") as directory:
+            root = Path(directory).resolve()
+            target, alias, other = root / "python3.12", root / "python", root / "other"
+            for path in (target, other):
+                path.write_text("#!/bin/sh\nexit 0\n")
+                path.chmod(0o755)
+            command = profile["PYTHON_SETUP"][0].removeprefix("RUN ")
+            command = command.replace("/usr/bin/python3.12", shlex.quote(str(target)))
+            command = command.replace("/usr/local/bin/python", shlex.quote(str(alias)))
+            for initial in (None, target, other, root / "missing", "regular-file"):
+                with self.subTest(initial=initial):
+                    if initial == "regular-file":
+                        alias.write_text("preserve me")
+                    elif initial is not None:
+                        alias.symlink_to(initial)
+                    result = subprocess.run(["/bin/sh", "-c", command], capture_output=True)
+                    if initial in (None, target):
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(alias.resolve(), target)
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        if initial == "regular-file":
+                            self.assertEqual(alias.read_text(), "preserve me")
+                        else:
+                            self.assertEqual(alias.readlink(), initial)
+                    alias.unlink()
 
     def test_auth_and_resource_bounds_are_declared(self):
         _, observed = recorded_profile()

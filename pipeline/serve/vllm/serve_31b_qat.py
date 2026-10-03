@@ -23,9 +23,27 @@ STARTUP_TIMEOUT = 20 * 60
 INPUT_TIMEOUT = 30 * 60
 IDLE_SECONDS = 300
 
+# Modal discovers `python` on PATH. Reuse the image's system interpreter so
+# its preinstalled serving packages stay in the same environment.
+PYTHON_SETUP = [
+    "RUN test -x /usr/bin/python3.12 && "
+    "if [ ! -e /usr/local/bin/python ] && [ ! -L /usr/local/bin/python ]; then "
+    "ln -s /usr/bin/python3.12 /usr/local/bin/python; fi && "
+    'test "$(readlink -f /usr/local/bin/python)" = "$(readlink -f /usr/bin/python3.12)"',
+    "RUN command -v pip && python -m pip --version && "
+    "python -c \"import os, sys; from importlib.metadata import version; "
+    "from importlib.util import find_spec; "
+    "assert os.path.realpath(sys.executable) == '/usr/bin/python3.12'; "
+    "assert sys.version_info[:2] == (3, 12); assert sys.prefix == sys.base_prefix; "
+    "assert version('vllm').split('+', 1)[0] == '0.30.0'; "
+    "print('python', sys.executable, sys.version, sys.prefix); "
+    "print('vllm', version('vllm'), find_spec('vllm').origin); "
+    "print('torch', version('torch'), find_spec('torch').origin)\"",
+]
+
 app = modal.App(APP_NAME)
 vllm_image = (
-    modal.Image.from_registry(IMAGE)
+    modal.Image.from_registry(IMAGE, setup_dockerfile_commands=PYTHON_SETUP)
     .entrypoint([])
     .add_local_python_source("_common")
 )

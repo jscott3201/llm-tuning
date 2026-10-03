@@ -23,8 +23,14 @@ qualification. The other serving scripts retain their existing settings.
 
 The registry supplies the pinned model and resource defaults. The profile's
 constants select the immutable image and lifecycle limits. It clears the
-image entrypoint and mounts `_common`; it adds no package installation or
-Python injection step.
+image entrypoint and mounts `_common`. A setup layer exposes the image's
+existing `/usr/bin/python3.12` as `/usr/local/bin/python`, which Modal requires
+on PATH. An existing destination is accepted only when it resolves to that same
+interpreter. The layer checks the existing pip command/module and reports
+Python, vLLM and Torch package metadata without importing their GPU runtime.
+It installs no packages or additional Python distribution. The derived image
+still requires an actual build and Function-creation check; an offline import
+cannot qualify that boundary. See [Modal's existing-image requirements](https://modal.com/docs/guide/existing-images).
 
 The model's compressed-tensors configuration selects quantization. vLLM
 selects attention, model dtype and KV dtype. This profile applies no Triton
@@ -109,7 +115,8 @@ uv run --frozen --no-sync pytest eval/test_eval_scoring.py -q
 ```
 
 The profile tests check immutable inputs, proxy-auth declarations, resource
-limits, legacy command defaults and failed-startup cleanup. They also import
-the profile with the installed Modal SDK without hydrating resources. Their
-only process execution is an authored local Python child; they perform no
-image build, model download, deployment or inference.
+limits, legacy command defaults, interpreter-alias handling and failed-startup
+cleanup. They also import the profile with the installed Modal SDK without
+hydrating resources. Their process execution uses temporary alias fixtures and
+an authored local Python child; they perform no image build, model download,
+deployment or inference.
