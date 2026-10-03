@@ -21,16 +21,55 @@ qualification. The other serving scripts retain their existing settings.
 | Startup / input timeout / idle window | 1,200 / 1,800 / 300 seconds |
 | App | `gemma4-31b-qat-pilot` |
 
-The registry supplies the pinned model and resource defaults. The profile's
-constants select the immutable image and lifecycle limits. It clears the
-image entrypoint and mounts `_common`. A setup layer exposes the image's
-existing `/usr/bin/python3.12` as `/usr/local/bin/python`, which Modal requires
-on PATH. An existing destination is accepted only when it resolves to that same
-interpreter. The layer checks the existing pip command/module and reports
-Python, vLLM and Torch package metadata without importing their GPU runtime.
-It installs no packages or additional Python distribution. The derived image
-still requires an actual build and Function-creation check; an offline import
-cannot qualify that boundary. See [Modal's existing-image requirements](https://modal.com/docs/guide/existing-images).
+The registry supplies the pinned model and resource defaults. The profile uses
+`_common.qat_image.build_image()`, which declares the same image independently
+of the serving App and cache Volumes. It clears the entrypoint and mounts
+`_common`. The setup layer exposes the image's existing `/usr/bin/python3.12`
+as `/usr/local/bin/python`, which Modal requires on PATH. An existing destination
+is accepted only when it resolves to that same interpreter. The layer checks the
+pip command/module and reports Python, vLLM and Torch package metadata. See
+[Modal's existing-image requirements](https://modal.com/docs/guide/existing-images).
+
+### CPU package repair and build guard
+
+The selected upstream image contains Torch 2.14/CUDA 13 while its vLLM 0.30.0
+and TorchVision 0.28.0 require Torch 2.13.0. The derived image restores the
+[official Torch 2.13.0+cu129 wheel](https://download.pytorch.org/whl/cu129/torch-2.13.0%2Bcu129-cp312-cp312-manylinux_2_28_x86_64.whl)
+with SHA256 `df28741fcd89e3da7cce2d48cbe5299d6732d510ac20f5d422d0b85edf18c327`.
+Its declared CUDA 12 components, CUDA toolkit 12.9.1, cuda-bindings 12.9.4 and
+Triton 3.7.1 are version-pinned in `_common/qat_repair.py`. The repair first
+removes the displaced Torch stack's known CUDA 13 library distributions, then
+forces reinstallation of all 15 selected CUDA 12 library distributions because
+the two generations share file paths. It keeps the original Python and holds
+other installed packages at their existing versions. Unexpected base versions
+or resolver conflicts fail the build. The owned version pins and Torch wheel
+hash do not form a complete hash lock for every acquired package; record the
+actual derived image ID after a successful build.
+
+One dependency exception is explicit: Torch 2.13.0 declares NCCL 2.29.7, while
+the recipe retains upstream NCCL 2.30.7 for DeepEP v2 GIN. The
+[pinned vLLM Dockerfile](https://github.com/vllm-project/vllm/blob/v0.30.0/docker/Dockerfile)
+uses that override deliberately. This is a documented metadata exception,
+not a clean `pip check` result or a Torch/GPU compatibility certification.
+The guard rejects every other active dependency conflict, including component
+requirements activated through dependency extras.
+
+The image runs `_common/qat_stack.py` on CPU before a serving container starts.
+It checks installed versions and requirements; retains bounded `python -m pip
+check` stdout, stderr and exit code; loads the actual TorchVision extension;
+runs a three-box CPU NMS case; verifies the NCCL library against its installed
+RECORD hash and queries its runtime version with `ncclGetVersion`; and invokes
+the actual vLLM CLI help with `VLLM_TARGET_DEVICE=cpu` scoped to that child.
+The NCCL version query does not initialize a GPU. Checks use offline model
+settings, deadlines and bounded output, and fail on child errors, timeouts,
+overflow, missing expected results or malformed reports. The sole expected
+NCCL conflict can pass the declared policy while its actual pip exit code 1
+remains visible in the report. A passing CPU report still leaves GPU serving,
+model loading, attention kernels and generation correctness unqualified.
+
+An offline SDK import validates these declarations without building the image.
+The repair and CPU guard still require an actual authorized image build and
+Function-creation check before they can be treated as live qualification.
 
 The model's compressed-tensors configuration selects quantization. vLLM
 selects attention, model dtype and KV dtype. This profile applies no Triton
@@ -110,13 +149,14 @@ their retention separately; stopping an app does not delete its cached data.
 With the pipeline's locked development dependencies already installed:
 
 ```sh
-uv run --frozen --no-sync python -m unittest discover -s serve/vllm -p 'test_qat_profile.py' -v
+uv run --frozen --no-sync python -m unittest discover -s serve/vllm -p 'test_qat*.py' -v
 uv run --frozen --no-sync pytest eval/test_eval_scoring.py -q
 ```
 
-The profile tests check immutable inputs, proxy-auth declarations, resource
-limits, legacy command defaults, interpreter-alias handling and failed-startup
-cleanup. They also import the profile with the installed Modal SDK without
+The tests check fixed inputs, proxy-auth declarations, resource limits, legacy
+command defaults, interpreter-alias handling and failed-startup cleanup. They
+also check the ordered repair plan, exact dependency-exception policy, extra
+propagation, native-library failure handling and bounded child processes. They also import the profile with the installed Modal SDK without
 hydrating resources. Their process execution uses temporary alias fixtures and
 an authored local Python child; they perform no image build, model download,
 deployment or inference.
