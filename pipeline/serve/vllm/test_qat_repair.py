@@ -12,13 +12,13 @@ from unittest.mock import patch
 
 PIPELINE = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PIPELINE))
-from _common import qat_repair as repair
+from _common import qat_repair as repair, qat_stack as guard
 
 
 def base_versions():
     return {"torch": "2.14.0", "cuda-toolkit": "13.0.3", **repair.RETAINED,
             "nvidia-nccl-cu13": "2.30.7", "nvidia-cublas": "13.1.1.3",
-            "nvidia-nccl-cu12": "2.30.7", "cuda-bindings": "13.0.3",
+            "nvidia-nccl-cu12": "2.30.7", "cuda-bindings": "13.0.3", "cuda-python": "13.4.1",
             "cuda-pathfinder": "1.3.1", "optional-native": "7.1"}
 
 
@@ -85,6 +85,26 @@ class RepairTests(unittest.TestCase):
         self.assertNotIn("nvidia-cublas==", constraints)
         self.assertEqual(constraints.splitlines(), sorted(constraints.splitlines()))
 
+    def test_cuda_python_is_an_explicit_target_paired_with_its_bindings(self):
+        install = repair.repair_plan(base_versions(), "/override", "/constraints")[-1]
+        self.assertIn("cuda-python==12.9.4", install)
+        constraints = repair.constraints_text(base_versions())
+        self.assertIn("cuda-python==12.9.4\n", constraints)
+        self.assertIn("cuda-bindings==12.9.4\n", constraints)
+        self.assertNotIn("cuda-python==13.4.1\n", constraints)
+        self.assertEqual(install[-1], repair.TORCH_URL)
+
+    def test_cuda_python_dependency_closure_rejects_old_pair_and_accepts_restored_pair(self):
+        installed = {
+            "cuda-python": SimpleNamespace(version="13.4.1", requires=["cuda-bindings~=13.4.1"]),
+            "cuda-bindings": SimpleNamespace(version="12.9.4", requires=[]),
+        }
+        issues, overrides = guard.dependency_report(installed, {})
+        self.assertEqual([row["dependency"] for row in issues], ["cuda-bindings"])
+        self.assertEqual(overrides, [])
+        installed["cuda-python"] = SimpleNamespace(version="12.9.4", requires=["cuda-bindings~=12.9.4"])
+        self.assertEqual(guard.dependency_report(installed, {}), ([], []))
+
     def test_ambient_resolver_settings_cannot_override_recipe(self):
         environment = {"UV_OVERRIDE": "/unexpected", "UV_INDEX_URL": "https://unexpected.invalid",
                        "PIP_INDEX_URL": "https://unexpected.invalid", "UV_PYTHON": "other-python",
@@ -133,6 +153,9 @@ class RepairEntrypointTests(unittest.TestCase):
                 self.assertNotIn("six==1.16.0\n", text)
                 self.assertIn("optional-native==7.1\n", text)
                 self.assertIn("cuda-toolkit==12.9.1\n", text)
+                self.assertIn("cuda-python==12.9.4\n", text)
+                self.assertNotIn("cuda-python==13.4.1\n", text)
+                self.assertIn("cuda-python==12.9.4", argv)
                 self.assertEqual(argv, repair.repair_plan(base_versions(),
                     argv[argv.index("--override") + 1], argv[argv.index("--constraint") + 1])[1])
         self.call_main(run)

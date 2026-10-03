@@ -41,7 +41,7 @@ RESTORE_NATIVE = {
     "nvidia-nvshmem-cu12": "3.4.5",
 }
 OWNED_VERSIONS = {**RESTORE_NATIVE, "cuda-toolkit": "12.9.1", "triton": "3.7.1",
-                  "cuda-bindings": "12.9.4"}
+                  "cuda-bindings": "12.9.4", "cuda-python": "12.9.4"}
 RETAINED = {"torchvision": "0.28.0+cu129", "vllm": "0.30.0+cu129",
             "torchaudio": "2.11.0", "transformers": "5.17.0"}
 
@@ -75,7 +75,8 @@ def repair_plan(versions, override, constraints):
                "--constraint", str(constraints)]
     for name in sorted(RESTORE_NATIVE):
         install += ["--reinstall-package", name]
-    commands.append([*install, TORCH_URL])
+    # Constraints alone need not replace an unrelated installed metapackage.
+    commands.append([*install, f"cuda-python=={OWNED_VERSIONS['cuda-python']}", TORCH_URL])
     return commands
 
 
