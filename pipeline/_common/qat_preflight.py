@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from dataclasses import dataclass
 import json
 import os
 import re
@@ -145,23 +146,31 @@ def sanitized_result(result):
     return result
 
 
-def save_cleanup(receipt):
+@dataclass
+class _ReceiptWrites:
+    """Track write failures for one invocation without clearing durable history."""
+    failed: bool = False
+
+
+def save_cleanup(receipt, writes):
     """A failed receipt update must never prevent an owned resource stop."""
     try:
         receipt.save()
     except Exception:
+        writes.failed = True
         receipt.data["receipt_write_failed"] = True
 
 
-async def cleanup(receipt, backend, deadline):
+async def cleanup(receipt, backend, deadline, *, writes=None):
     """Stop only owned targets; absent snapshots cannot settle missing replies."""
+    writes = writes if writes is not None else _ReceiptWrites()
     data = receipt.data
     data["cleanup"] = "unknown"
-    save_cleanup(receipt)
+    save_cleanup(receipt, writes)
     if all(state == "not_requested" for state in data["allocation"].values()):
         data["cleanup"] = "verified"
         data["cleanup_evidence"] = {"no_allocation_requested": True}
-        save_cleanup(receipt)
+        save_cleanup(receipt, writes)
         return
     try:
         async with asyncio.timeout_at(deadline):
@@ -170,7 +179,7 @@ async def cleanup(receipt, backend, deadline):
                 data["cleanup_reason"] = "app_not_observed"
                 return
             data["app_id"] = row["App ID"]
-            save_cleanup(receipt)
+            save_cleanup(receipt, writes)
             try:
                 await backend.terminate(receipt, min(deadline, asyncio.get_running_loop().time() + 10))
             except Exception:
@@ -200,11 +209,12 @@ async def cleanup(receipt, backend, deadline):
     except Exception:
         data["cleanup_reason"] = "cleanup_readback_failed"
     finally:
-        save_cleanup(receipt)
+        save_cleanup(receipt, writes)
 
 
 async def preflight(receipt, backend, source, *, final_deadline=None):
     """Run one attempt, reserving final time for cleanup even after interruption."""
+    writes = _ReceiptWrites()
     loop = asyncio.get_running_loop()
     final_deadline = final_deadline if final_deadline is not None else loop.time() + LIMITS["total_seconds"]
     work_deadline = final_deadline - LIMITS["cleanup_seconds"]
@@ -263,26 +273,27 @@ async def preflight(receipt, backend, source, *, final_deadline=None):
     except Exception:
         data.update(status="failed", failure_reason="preflight_failed")
     finally:
-        save_cleanup(receipt)
+        save_cleanup(receipt, writes)
         # The process helper reserves at most two seconds to kill/join its child.
         def cancelled_cleanup():
             nonlocal interrupted
             interrupted = True
             data.update(status="interrupted", failure_reason="interrupted")
-        await finish(cleanup(receipt, backend, final_deadline - 2), on_cancel=cancelled_cleanup)
-        save_cleanup(receipt)
-        if data["cleanup"] != "verified" or data.get("receipt_write_failed"):
+        await finish(cleanup(receipt, backend, final_deadline - 2, writes=writes), on_cancel=cancelled_cleanup)
+        save_cleanup(receipt, writes)
+        if data["cleanup"] != "verified" or writes.failed:
             data["status"] = "interrupted" if interrupted else "failed"
-            save_cleanup(receipt)
+            save_cleanup(receipt, writes)
     return 130 if interrupted else (0 if data["status"] == "passed" else 1)
 
 
 async def recover(receipt, backend):
     """Reconcile the saved attempt without creating any remote resource."""
+    writes = _ReceiptWrites()
     deadline = asyncio.get_running_loop().time() + LIMITS["cleanup_seconds"] - 2
     interrupted = False
     def cancelled_cleanup():
         nonlocal interrupted
         interrupted = True
-    await finish(cleanup(receipt, backend, deadline), on_cancel=cancelled_cleanup)
-    return 130 if interrupted else (0 if receipt.data["cleanup"] == "verified" and not receipt.data.get("receipt_write_failed") else 1)
+    await finish(cleanup(receipt, backend, deadline, writes=writes), on_cancel=cancelled_cleanup)
+    return 130 if interrupted else (0 if receipt.data["cleanup"] == "verified" and not writes.failed else 1)

@@ -264,6 +264,55 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await task, 130)
         self.assertEqual(self.receipt.data["cleanup"], "verified")
 
+    async def test_recovery_after_transient_run_receipt_failure_preserves_history(self):
+        backend = FakeBackend(self.receipt)
+        save = self.receipt.save
+        failed_once = False
+        def fail_once_after_success():
+            nonlocal failed_once
+            if not failed_once and self.receipt.data["status"] == "passed" and self.receipt.data["cleanup"] == "pending":
+                failed_once = True
+                raise OSError("authored transient disk failure")
+            save()
+        with patch.object(self.receipt, "save", side_effect=fail_once_after_success):
+            self.assertEqual(await control.preflight(self.receipt, backend, self.source), 1)
+        self.assertTrue(failed_once)
+        self.assertEqual(self.receipt.data["status"], "failed")
+        self.assertEqual(self.receipt.data["cleanup"], "verified")
+        self.assertTrue(self.receipt.data["receipt_write_failed"])
+        path = self.receipt.path
+        self.receipt.close()
+        self.receipt = Receipt(path)
+        self.receipt.load("selected")
+        recovered = FakeBackend(self.receipt)
+        recovered.rows = backend.rows
+        self.assertEqual(await control.recover(self.receipt, recovered), 0)
+        saved = json.loads(path.read_text())
+        self.assertEqual(saved["status"], "failed")
+        self.assertEqual(saved["cleanup"], "verified")
+        self.assertTrue(saved["receipt_write_failed"])
+        self.assertEqual(recovered.creates, 0)
+
+    async def test_new_recovery_write_failure_fails_only_its_invocation(self):
+        backend = self.acknowledged()
+        self.receipt.data["receipt_write_failed"] = True
+        self.receipt.save()
+        save = self.receipt.save
+        failed_once = False
+        def fail_first_save():
+            nonlocal failed_once
+            if not failed_once:
+                failed_once = True
+                raise OSError("authored new recovery disk failure")
+            save()
+        with patch.object(self.receipt, "save", side_effect=fail_first_save):
+            self.assertEqual(await control.recover(self.receipt, backend), 1)
+        self.assertTrue(failed_once)
+        self.assertEqual(self.receipt.data["cleanup"], "verified")
+        self.assertTrue(self.receipt.data["receipt_write_failed"])
+        self.assertEqual(await control.recover(self.receipt, backend), 0)
+        self.assertTrue(json.loads(self.receipt.path.read_text())["receipt_write_failed"])
+
     async def test_receipt_write_failure_after_allocation_cannot_skip_cleanup(self):
         backend = FakeBackend(self.receipt)
         save = self.receipt.save
