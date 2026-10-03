@@ -36,12 +36,15 @@ The selected upstream image contains Torch 2.14/CUDA 13 while its vLLM 0.30.0
 and TorchVision 0.28.0 require Torch 2.13.0. The derived image restores the
 [official Torch 2.13.0+cu129 wheel](https://download.pytorch.org/whl/cu129/torch-2.13.0%2Bcu129-cp312-cp312-manylinux_2_28_x86_64.whl)
 with SHA256 `df28741fcd89e3da7cce2d48cbe5299d6732d510ac20f5d422d0b85edf18c327`.
-Its declared CUDA 12 components, CUDA toolkit 12.9.1, cuda-bindings 12.9.4 and
-Triton 3.7.1 are version-pinned in `_common/qat_repair.py`. The repair first
+Its declared CUDA 12 components, CUDA toolkit 12.9.1, cuda-bindings 12.9.4,
+cuda-python 12.9.4 and Triton 3.7.1 are version-pinned in
+`_common/qat_repair.py`. The repair first
 removes the displaced Torch stack's known CUDA 13 library distributions, then
 forces reinstallation of all 15 selected CUDA 12 library distributions because
-the two generations share file paths. It keeps the original Python and holds
-other installed packages at their existing versions. Unexpected base versions
+the two generations share file paths. It explicitly installs cuda-python 12.9.4
+alongside Torch so the metapackage requires the restored CUDA 12 bindings.
+It keeps the original Python and holds other installed packages at their
+existing versions. Unexpected base versions
 or resolver conflicts fail the build. The owned version pins and Torch wheel
 hash do not form a complete hash lock for every acquired package; record the
 actual derived image ID after a successful build.
