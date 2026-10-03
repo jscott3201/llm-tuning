@@ -42,6 +42,23 @@ class RepairTests(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(RuntimeError):
                 repair.repair_plan({**base_versions(), name: value}, "/override", "/constraints")
 
+    def test_equivalent_toolkit_release_versions_preserve_plan_and_constraints(self):
+        expected = repair.repair_plan(base_versions(), "/override", "/constraints")
+        constraints = repair.constraints_text(base_versions())
+        for value in ("13.0.3.0", "13.0.3.0.0"):
+            with self.subTest(value=value):
+                versions = {**base_versions(), "cuda-toolkit": value}
+                self.assertEqual(repair.repair_plan(versions, "/override", "/constraints"), expected)
+                self.assertEqual(repair.constraints_text(versions), constraints)
+
+    def test_toolkit_other_releases_suffixes_invalid_and_missing_fail(self):
+        for value in ("13.0.4", "13.0.3.post1", "13.0.3.dev1", "13.0.3rc1", "13.0.3+local", "invalid", "", None):
+            with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, "unrecognized base"):
+                repair.repair_plan({**base_versions(), "cuda-toolkit": value}, "/override", "/constraints")
+        versions = {name: value for name, value in base_versions().items() if name != "cuda-toolkit"}
+        with self.assertRaisesRegex(RuntimeError, "unrecognized base"):
+            repair.repair_plan(versions, "/override", "/constraints")
+
     def test_audio_cuda_build_is_accepted_and_preserved(self):
         versions = {**base_versions(), "torchaudio": "2.11.0+cu129"}
         repair.repair_plan(versions, "/override", "/constraints")
@@ -126,6 +143,14 @@ class RepairEntrypointTests(unittest.TestCase):
         self.write(self.local, "six", "1.18.0")
         calls = []
         with self.assertRaisesRegex(RuntimeError, "ambiguous"):
+            self.call_main(lambda *args, **kwargs: calls.append(args))
+        self.assertEqual(calls, [])
+
+    def test_unrecognized_toolkit_fails_before_subprocess_mutation(self):
+        record = self.local / "cuda_toolkit-13.0.3.dist-info" / "METADATA"
+        record.write_text("Metadata-Version: 2.1\nName: cuda-toolkit\nVersion: 13.0.3.post1\n")
+        calls = []
+        with self.assertRaisesRegex(RuntimeError, "unrecognized base"):
             self.call_main(lambda *args, **kwargs: calls.append(args))
         self.assertEqual(calls, [])
 

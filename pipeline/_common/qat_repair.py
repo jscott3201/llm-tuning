@@ -49,8 +49,13 @@ RETAINED = {"torchvision": "0.28.0+cu129", "vllm": "0.30.0+cu129",
 def repair_plan(versions, override, constraints):
     """Fail on an unrecognized base and return ordered, interpreter-bound argv."""
     from packaging.specifiers import SpecifierSet
+    from packaging.version import InvalidVersion, Version
 
-    if versions.get("torch") not in {"2.14.0", "2.14.0+cu130"} or versions.get("cuda-toolkit") != "13.0.3":
+    try:
+        toolkit = Version(versions.get("cuda-toolkit", ""))
+    except (InvalidVersion, TypeError):
+        raise RuntimeError("unrecognized base Torch/CUDA stack") from None
+    if versions.get("torch") not in {"2.14.0", "2.14.0+cu130"} or toolkit != Version("13.0.3"):
         raise RuntimeError("unrecognized base Torch/CUDA stack")
     for name, expected in RETAINED.items():
         allowed = {expected, expected + "+cu129"} if name == "torchaudio" else {expected}
