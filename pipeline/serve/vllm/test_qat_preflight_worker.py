@@ -11,6 +11,7 @@ import runpy
 import subprocess
 import sys
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
@@ -21,6 +22,33 @@ from _common import qat_preflight as controller
 from _common import qat_preflight_worker as worker
 from _common.qat_preflight_receipt import Receipt, validator_source
 from test_qat_preflight_io import Stream, passing_report
+
+
+def installed_byte_reader(chunks=(), *, delay=0, descriptor=1):
+    """Exercise the SDK's translated public byte reader with a local router stub."""
+    from modal._utils.async_utils import synchronizer
+    from modal.io_streams import (
+        _BytesStreamReaderThroughCommandRouter, _StreamReader,
+        _StreamReaderThroughCommandRouterParams,
+    )
+    started, closed = threading.Event(), threading.Event()
+    class Router:
+        async def exec_stdio_read(self, task_id, object_id, file_descriptor, deadline):
+            assert (task_id, object_id, file_descriptor, deadline) == ("ta-offline", "ex-offline", descriptor, None)
+            started.set()
+            try:
+                for chunk in chunks:
+                    yield SimpleNamespace(data=chunk)
+                await asyncio.sleep(delay)
+            finally:
+                closed.set()
+    # Avoid the SDK constructor's dedicated-loop assertion without replacing any
+    # iteration/close implementation or creating a client.
+    params = _StreamReaderThroughCommandRouterParams(descriptor, "ta-offline", "ex-offline", Router(), None)
+    reader = _StreamReader.__new__(_StreamReader)
+    reader._impl = _BytesStreamReaderThroughCommandRouter(params)
+    reader._read_gen = None
+    return synchronizer._translate_out(reader), reader, started, closed
 
 
 class DeclarationTests(unittest.TestCase):
@@ -83,8 +111,8 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         stdin = SimpleNamespace(write=Mock(), write_eof=Mock(), drain=SimpleNamespace(aio=AsyncMock()))
         process = SimpleNamespace(stdin=stdin, stdout=Stream([json.dumps(passing_report()).encode()]),
                                   stderr=Stream(), wait=SimpleNamespace(aio=AsyncMock(return_value=0)))
-        process.stdout.aclose = SimpleNamespace(aio=AsyncMock())
-        process.stderr.aclose = SimpleNamespace(aio=AsyncMock())
+        process.stdout.aclose = AsyncMock()
+        process.stderr.aclose = AsyncMock()
         sandbox = SimpleNamespace(object_id="sb-owned", exec=SimpleNamespace(aio=AsyncMock(return_value=process)))
         async def create(*args, **kwargs):
             self.assertEqual(acknowledged[-1], ("allocating", {"kind": "sandbox"}))
@@ -110,10 +138,76 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         stdin.write.assert_called_once_with(validator_source())
         stdin.write_eof.assert_called_once()
         stdin.drain.aio.assert_awaited_once()
-        process.stdout.aclose.aio.assert_awaited_once()
-        process.stderr.aclose.aio.assert_awaited_once()
+        process.stdout.aclose.assert_awaited_once()
+        process.stderr.aclose.assert_awaited_once()
         kwargs = sandbox.exec.aio.call_args.kwargs
         self.assertEqual(kwargs, {"text": False, "bufsize": -1, "pty": False, "timeout": 90, "secrets": []})
+
+    async def run_installed_streams(self, stdout, stderr, *, code=0, wait_delay=0):
+        async def wait():
+            await asyncio.sleep(wait_delay)
+            return code
+        process = SimpleNamespace(
+            stdin=SimpleNamespace(write=Mock(), write_eof=Mock(), drain=SimpleNamespace(aio=AsyncMock())),
+            stdout=stdout, stderr=stderr, wait=SimpleNamespace(aio=wait))
+        sandbox = SimpleNamespace(object_id="sb-owned", exec=SimpleNamespace(aio=AsyncMock(return_value=process)))
+        class App:
+            app_id = "ap-owned"
+            def __init__(self, name):
+                self.run = SimpleNamespace(aio=self.context)
+            @asynccontextmanager
+            async def context(self, **kwargs):
+                yield self
+        sdk = SimpleNamespace(App=App,
+                              Image=SimpleNamespace(from_id=SimpleNamespace(aio=AsyncMock(return_value=object()))),
+                              Sandbox=SimpleNamespace(create=SimpleNamespace(aio=AsyncMock(return_value=sandbox))))
+        with patch.object(worker, "emit") as emit:
+            await worker.run_preflight(self.config(), sdk, AsyncMock())
+        return emit.call_args.kwargs["result"]
+
+    async def test_installed_sdk_byte_stream_eof_closes_and_preserves_remote_exit(self):
+        for code, payload, reason in ((0, json.dumps(passing_report()).encode(), None),
+                                      (1, b'{"status":"failed"}', "remote_nonzero")):
+            with self.subTest(code=code):
+                stdout, stdout_internal, _, stdout_closed = installed_byte_reader([payload])
+                stderr, stderr_internal, _, stderr_closed = installed_byte_reader(descriptor=2)
+                self.assertTrue(inspect.iscoroutinefunction(stdout.aclose))
+                self.assertFalse(hasattr(stdout.aclose, "aio"))
+                result = await self.run_installed_streams(stdout, stderr, code=code)
+                self.assertEqual(result["reason"], reason)
+                self.assertEqual(result["remote_exit_code"], code)
+                self.assertEqual(result["streams_complete"], {"stdout": True, "stderr": True})
+                self.assertIsNone(stdout_internal._read_gen)
+                self.assertIsNone(stderr_internal._read_gen)
+                self.assertTrue(stdout_closed.is_set() and stderr_closed.is_set())
+
+    async def test_installed_sdk_byte_stream_overflow_closes_both_readers(self):
+        stdout, stdout_internal, _, stdout_closed = installed_byte_reader([b"x" * 40000], delay=30)
+        stderr, stderr_internal, _, stderr_closed = installed_byte_reader(delay=30, descriptor=2)
+        result = await self.run_installed_streams(stdout, stderr, wait_delay=30)
+        self.assertEqual(result["reason"], "output_limit")
+        self.assertEqual(result["stream_bytes"]["stdout"], 32768)
+        self.assertIsNone(stdout_internal._read_gen)
+        self.assertIsNone(stderr_internal._read_gen)
+        self.assertTrue(stdout_closed.is_set() and stderr_closed.is_set())
+
+    async def test_installed_sdk_byte_stream_cancellation_closes_both_readers(self):
+        stdout, stdout_internal, stdout_started, stdout_closed = installed_byte_reader(delay=30)
+        stderr, stderr_internal, stderr_started, stderr_closed = installed_byte_reader(delay=30, descriptor=2)
+        task = asyncio.create_task(self.run_installed_streams(stdout, stderr, wait_delay=30))
+        try:
+            async with asyncio.timeout(2):
+                while not stdout_started.is_set() or not stderr_started.is_set():
+                    await asyncio.sleep(.005)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            self.assertIsNone(stdout_internal._read_gen)
+            self.assertIsNone(stderr_internal._read_gen)
+            self.assertTrue(stdout_closed.is_set() and stderr_closed.is_set())
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     async def test_source_mismatch_fails_before_image_lookup_or_allocation(self):
         sdk = Mock()

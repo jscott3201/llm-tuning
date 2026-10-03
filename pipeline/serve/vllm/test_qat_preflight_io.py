@@ -1,5 +1,6 @@
 """Independent subprocess and cancellation controls for CPU preflight I/O."""
 import asyncio
+import copy
 import json
 from pathlib import Path
 import sys
@@ -19,6 +20,21 @@ def passing_report():
         checks[name]["observation"] = {"status": "passed"}
     checks["pip_check"].update(policy_status="passed", stdout="No broken requirements found.", stderr="")
     return {"schema": "qat-cpu-stack-v1", "status": "passed", "checks": checks}
+
+
+def failed_metadata_report():
+    observation = {
+        "status": "failed", "versions": {"torch": "2.14.0+cu130", "torchvision": "0.28.0+cu129",
+                                           "vllm": "0.30.0+cu129", "transformers": "5.17.0"},
+        "version_mismatches": [{"package": "torch", "expected": "2.13.0+cu129", "actual": "2.14.0+cu130"}],
+        "dependency_issue_count": 1,
+        "dependency_issues": [{"package": "torchvision", "package_version": "0.28.0+cu129",
+                               "dependency": "torch", "required": "==2.13.0", "installed": "2.14.0+cu130"}],
+        "dependency_issues_truncated": False, "declared_dependency_overrides": [],
+    }
+    return {"schema": "qat-cpu-stack-v1", "status": "failed", "checks": {
+        "metadata": {"status": "failed", "exit_code": 1, "reason": "nonzero_exit",
+                     "stdout": json.dumps(observation), "stderr": "authored-private-diagnostic"}}}
 
 
 class Stream:
@@ -79,6 +95,7 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
         started = time.monotonic()
         result = evaluate_capture(await self.capture(remote))
         self.assertTrue(result["validator_passed"])
+        self.assertEqual(result["validator_report_status"], "passed")
         self.assertGreaterEqual(time.monotonic() - started, .025)
         self.assertEqual(result["stream_bytes"]["stderr"], 3)
         self.assertTrue(remote.stdout.joined and remote.stderr.joined and remote.wait_joined)
@@ -104,6 +121,115 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(evaluate_capture(await self.capture(Remote([json.dumps(report).encode()])))["validator_passed"])
         report["checks"]["pip_check"]["stdout"] += "unapproved conflict\n"
         self.assertFalse(evaluate_capture(await self.capture(Remote([json.dumps(report).encode()])))["validator_passed"])
+
+    async def test_valid_failed_metadata_report_retains_only_selected_rejection(self):
+        report = failed_metadata_report()
+        result = evaluate_capture(await self.capture(Remote([json.dumps(report).encode()], code=1)))
+        self.assertEqual(result["validator_report_status"], "failed")
+        self.assertFalse(result["validator_passed"])
+        self.assertEqual(result["reason"], "remote_nonzero")
+        self.assertEqual(result["checks"], {"metadata": {
+            "status": "failed", "exit_code": 1, "reason": "nonzero_exit", "rejection_kind": "metadata_mismatch"}})
+        self.assertNotIn("authored-private-diagnostic", json.dumps(result))
+        self.assertNotIn("2.14.0", json.dumps(result))
+
+    async def test_nonstandard_exit_malformed_prefix_and_contradictions_remain_unknown(self):
+        report = failed_metadata_report()
+        cases = [(report, 0), (report, 2), (passing_report(), 1), ({"status": "failed"}, 1)]
+        empty = copy.deepcopy(report)
+        empty["checks"] = {}
+        cases.append((empty, 1))
+        skipped = copy.deepcopy(report)
+        skipped["checks"] = {"native": skipped["checks"]["metadata"]}
+        cases.append((skipped, 1))
+        continued = copy.deepcopy(report)
+        continued["checks"]["pip_check"] = passing_report()["checks"]["pip_check"]
+        cases.append((continued, 1))
+        all_passed = passing_report()
+        all_passed["status"] = "failed"
+        cases.append((all_passed, 1))
+        unknown_reason = copy.deepcopy(report)
+        unknown_reason["checks"]["metadata"]["reason"] = "authored-private-error"
+        cases.append((unknown_reason, 1))
+        for value, code in cases:
+            with self.subTest(report=value, code=code):
+                result = evaluate_capture(await self.capture(Remote([json.dumps(value).encode()], code=code)))
+                self.assertEqual(result["validator_report_status"], "unknown")
+                self.assertFalse(result["validator_passed"])
+                self.assertNotIn("checks", result)
+        captured = await self.capture(Remote([json.dumps(report).encode()], code=1))
+        captured["complete"]["stderr"] = False
+        self.assertEqual(evaluate_capture(captured)["validator_report_status"], "unknown")
+        captured["complete"]["stderr"] = True
+        captured["stdout"] = b"not json"
+        self.assertEqual(evaluate_capture(captured)["validator_report_status"], "unknown")
+
+    async def test_structured_checker_and_infrastructure_errors_are_not_metadata_mismatch(self):
+        for reason, code in (("nonzero_exit", 1), ("timeout", -9), ("output_limit", -9),
+                             ("process_error", None), ("cleanup_error", 0), ("cleanup_timeout", None)):
+            report = failed_metadata_report()
+            report["checks"]["metadata"].update(reason=reason, exit_code=code,
+                stdout='{ "status": "failed", "error": "authored-private-import-error" }')
+            result = evaluate_capture(await self.capture(Remote([json.dumps(report).encode()], code=1)))
+            self.assertEqual(result["validator_report_status"], "failed")
+            self.assertEqual(result["checks"]["metadata"]["reason"], reason)
+            self.assertNotIn("rejection_kind", result["checks"]["metadata"])
+            self.assertNotIn("authored-private-import-error", json.dumps(result))
+            from _common.qat_preflight import sanitized_result
+            self.assertEqual(sanitized_result(result), result)
+
+    async def test_contradictory_metadata_detail_never_qualifies_mismatch(self):
+        original = failed_metadata_report()
+        observation = json.loads(original["checks"]["metadata"]["stdout"])
+        cases = []
+        missing_mismatch = copy.deepcopy(observation)
+        missing_mismatch["version_mismatches"] = []
+        cases.append(missing_mismatch)
+        wrong_count = copy.deepcopy(observation)
+        wrong_count["dependency_issue_count"] = 0
+        cases.append(wrong_count)
+        satisfied = copy.deepcopy(observation)
+        satisfied["dependency_issues"][0]["required"] = ">=2.13.0"
+        cases.append(satisfied)
+        for invalid in cases:
+            report = copy.deepcopy(original)
+            report["checks"]["metadata"]["stdout"] = json.dumps(invalid)
+            result = evaluate_capture(await self.capture(Remote([json.dumps(report).encode()], code=1)))
+            self.assertEqual(result["validator_report_status"], "failed")
+            self.assertNotIn("rejection_kind", result["checks"]["metadata"])
+
+    async def test_pip_policy_rejection_is_selected_without_changing_admission(self):
+        report = passing_report()
+        report["status"] = "failed"
+        del report["checks"]["native"], report["checks"]["vllm_cli"]
+        report["checks"]["pip_check"].update(policy_status="failed", stdout="unexpected pip report")
+        result = evaluate_capture(await self.capture(Remote([json.dumps(report).encode()], code=1)))
+        self.assertEqual(result["validator_report_status"], "failed")
+        self.assertFalse(result["validator_passed"])
+        self.assertEqual(result["checks"]["pip_check"]["reason"], "dependency_policy_rejected")
+        from _common.qat_preflight import sanitized_result
+        self.assertEqual(sanitized_result(result), result)
+        report["checks"]["pip_check"]["stdout"] = "No broken requirements found."
+        result = evaluate_capture(await self.capture(Remote([json.dumps(report).encode()], code=1)))
+        self.assertEqual(result["validator_report_status"], "unknown")
+
+    async def test_failed_native_prefix_requires_independently_accepted_pip_exception(self):
+        report = passing_report()
+        report["checks"]["metadata"]["observation"]["declared_dependency_overrides"] = [{
+            "package": "torch", "package_version": "2.13.0+cu129", "dependency": "nvidia-nccl-cu12",
+            "required": "==2.29.7", "installed": "2.30.7"}]
+        report["checks"]["pip_check"].update(status="failed", exit_code=1, reason="nonzero_exit",
+            stdout="torch 2.13.0+cu129 has requirement nvidia-nccl-cu12==2.29.7, but you have nvidia-nccl-cu12 2.30.7.\n")
+        report["status"] = "failed"
+        del report["checks"]["vllm_cli"]
+        report["checks"]["native"] = {"status": "failed", "exit_code": 1, "reason": "nonzero_exit"}
+        result = evaluate_capture(await self.capture(Remote([json.dumps(report).encode()], code=1)))
+        self.assertEqual(result["validator_report_status"], "failed")
+        self.assertEqual(result["checks"]["native"]["reason"], "nonzero_exit")
+        report["checks"]["pip_check"]["stdout"] += "unapproved conflict\n"
+        result = evaluate_capture(await self.capture(Remote([json.dumps(report).encode()], code=1)))
+        self.assertEqual(result["validator_report_status"], "unknown")
+        self.assertNotIn("checks", result)
 
     async def test_late_eof_cannot_be_replaced_by_remote_zero(self):
         remote = Remote([json.dumps(passing_report()).encode()], eof_delay=2)

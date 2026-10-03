@@ -160,6 +160,19 @@ provider; an empty snapshot or joined local worker cannot settle it. Receipt
 write errors fail the attempt while cleanup still runs using the known owned
 identities.
 
+A result records `validator_report_status` as `passed`, `failed`, or `unknown`.
+Only the complete passing report and remote exit zero can set
+`validator_passed: true`. A complete, schema-valid failing report with remote
+exit one retains only its checked stage prefix, status, exit code and fixed
+failure reasons. Raw diagnostic text and observations are excluded. A metadata
+child report with consistent version/dependency mismatch evidence adds the
+fixed `rejection_kind: metadata_mismatch`; a checker/import failure, timeout or
+output limit does not establish that rejection. A failed-image negative control
+therefore needs that expected rejection evidence and independently verified
+cleanup. An arbitrary nonzero exit or malformed/incomplete report remains
+`unknown`, and every failed or unknown validator result still makes `run` exit
+nonzero.
+
 Exit 0 means the requested run or recovery passed its checks; exit 1 means
 failure or unresolved cleanup; exit 130 reports an interruption after bounded
 cleanup. Recovery does not rerun or regrade the CPU validator. The public

@@ -12,6 +12,8 @@ PIPELINE = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PIPELINE))
 from _common import qat_preflight as control
 from _common.qat_preflight_receipt import Receipt, validator_source
+from _common.qat_preflight_io import evaluate_capture
+from test_qat_preflight_io import failed_metadata_report
 
 
 class FakeBackend:
@@ -48,11 +50,12 @@ class FakeBackend:
         if self.mode != "missing_result":
             await event({"event": "result", "result": {
                 "validator_passed": self.mode != "failed_report", "remote_exit_code": 0,
+                "validator_report_status": "unknown" if self.mode == "failed_report" else "passed",
                 "streams_complete": {"stdout": True, "stderr": True},
                 "stream_bytes": {"stdout": 100, "stderr": 0},
                 "stream_sha256": {"stdout": "0" * 64, "stderr": "0" * 64},
                 "reason": None if self.mode != "failed_report" else "invalid_validator_report",
-                "checks": {name: {"status": "passed", "exit_code": 0} for name in
+                "checks": {name: {"status": "passed", "exit_code": 0, **({"policy_status": "passed"} if name == "pip_check" else {})} for name in
                            ("metadata", "pip_check", "native", "vllm_cli")}}})
         return {"reason": None, "returncode": 7 if self.mode == "worker_nonzero" else 0}
 
@@ -156,6 +159,37 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(backend.rows[0]["State"], "running")
         self.assertEqual(self.receipt.data["sandbox_id"], "sb-owned")
         self.assertNotIn("unrelated", self.receipt.path.read_text())
+
+    async def test_failed_validator_report_persists_selected_evidence_without_success(self):
+        backend = FakeBackend(self.receipt)
+        original = backend.worker
+        report = failed_metadata_report()
+        result = evaluate_capture({"returncode": 1, "reason": None, "complete": {"stdout": True, "stderr": True},
+                                   "stdout": json.dumps(report).encode(), "stderr": b""})
+        async def worker(mode, config, deadline, event):
+            async def selected(message):
+                if message.get("event") == "result":
+                    message = {"event": "result", "result": result}
+                return await event(message)
+            return await original(mode, config, deadline, selected)
+        backend.worker = worker
+        self.assertEqual(await control.preflight(self.receipt, backend, self.source), 1)
+        saved = json.loads(self.receipt.path.read_text())
+        self.assertEqual(saved["cleanup"], "verified")
+        self.assertEqual(saved["status"], "failed")
+        self.assertEqual(saved["result"]["validator_report_status"], "failed")
+        self.assertEqual(saved["result"]["checks"]["metadata"]["rejection_kind"], "metadata_mismatch")
+        self.assertNotIn("authored-private-diagnostic", self.receipt.path.read_text())
+        for mutation in ({"stdout": "authored-private-diagnostic"}, {"reason": "authored-private-diagnostic"},
+                         {"rejection_kind": "authored-private-diagnostic"}, {"status": "passed"}):
+            changed = copy.deepcopy(result)
+            changed["checks"]["metadata"].update(mutation)
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                control.sanitized_result(changed)
+        for mutation in ({"remote_exit_code": 0}, {"validator_passed": True}, {"validator_report_status": "unknown"},
+                         {"streams_complete": {"stdout": False, "stderr": True}}):
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                control.sanitized_result({**result, **mutation})
 
     async def test_zero_worker_exit_without_valid_result_still_fails_and_cleans(self):
         for mode in ("failed_report", "missing_result", "worker_nonzero"):
