@@ -72,6 +72,23 @@ class RepairTests(unittest.TestCase):
         self.assertEqual(len(plan), 1)
         self.assertEqual(plan[0][3], "install")
 
+    def test_known_optional_lmcache_is_removed_before_restore_without_pruning_dependencies(self):
+        versions = {**base_versions(), "lmcache": "0.5.5", "shared-cache-dependency": "7.1"}
+        remove, install = repair.repair_plan(versions, "/override", "/constraints")
+        self.assertEqual(remove[6:], ["lmcache", "nvidia-cublas", "nvidia-nccl-cu13"])
+        self.assertEqual(install, repair.repair_plan(base_versions(), "/override", "/constraints")[-1])
+        constraints = repair.constraints_text(versions)
+        self.assertNotIn("lmcache==", constraints)
+        self.assertIn("shared-cache-dependency==7.1\n", constraints)
+        self.assertIn("optional-native==7.1\n", constraints)
+        self.assertEqual(constraints, repair.constraints_text({name: version for name, version in versions.items()
+                                                              if name != "lmcache"}))
+
+    def test_unknown_optional_lmcache_versions_are_rejected(self):
+        for version in ("0.5.4", "0.5.6", "0.5.5+local", None):
+            with self.subTest(version=version), self.assertRaisesRegex(RuntimeError, "unrecognized optional LMCache"):
+                repair.repair_plan({**base_versions(), "lmcache": version}, "/override", "/constraints")
+
     def test_constraints_pin_owned_changes_and_preserve_unrelated_packages(self):
         constraints = repair.constraints_text(base_versions())
         self.assertIn("cuda-bindings==12.9.4\n", constraints)
@@ -142,6 +159,8 @@ class RepairEntrypointTests(unittest.TestCase):
             repair.main()
 
     def test_main_uses_active_versions_for_plan_and_constraints(self):
+        self.write(self.local, "lmcache", "0.5.5")
+        self.write(self.local, "shared-cache-dependency", "7.1")
         calls = []
         def run(argv, **kwargs):
             calls.append(argv)
@@ -155,12 +174,21 @@ class RepairEntrypointTests(unittest.TestCase):
                 self.assertIn("cuda-toolkit==12.9.1\n", text)
                 self.assertIn("cuda-python==12.9.4\n", text)
                 self.assertNotIn("cuda-python==13.4.1\n", text)
+                self.assertNotIn("lmcache==", text)
+                self.assertIn("shared-cache-dependency==7.1\n", text)
                 self.assertIn("cuda-python==12.9.4", argv)
                 self.assertEqual(argv, repair.repair_plan(base_versions(),
                     argv[argv.index("--override") + 1], argv[argv.index("--constraint") + 1])[1])
         self.call_main(run)
         self.assertEqual(len(calls), 2)
-        self.assertEqual(calls[0], repair.repair_plan(base_versions(), "/unused", "/unused")[0])
+        self.assertEqual(calls[0][6:], ["lmcache", "nvidia-cublas", "nvidia-nccl-cu13"])
+
+    def test_unknown_lmcache_fails_before_first_installer_call(self):
+        self.write(self.local, "lmcache", "0.5.6")
+        calls = []
+        with self.assertRaisesRegex(RuntimeError, "unrecognized optional LMCache"):
+            self.call_main(lambda *args, **kwargs: calls.append(args))
+        self.assertEqual(calls, [])
 
     def test_winning_root_ambiguity_fails_before_subprocess_mutation(self):
         self.write(self.local, "six", "1.18.0")

@@ -49,6 +49,13 @@ or resolver conflicts fail the build. The owned version pins and Torch wheel
 hash do not form a complete hash lock for every acquired package; record the
 actual derived image ID after a successful build.
 
+The QAT profile does not enable the optional LMCache KV connector. The repair
+removes the known LMCache 0.5.5 CUDA 13 build before restoring the CUDA 12 stack;
+an unexpected installed LMCache version fails before any installer command.
+An absent LMCache package is accepted. Its other dependencies remain installed
+and constrained at their existing versions unless already owned by the repair.
+The full metadata, pip, native-library and CLI checks still run afterward.
+
 One dependency exception is explicit: Torch 2.13.0 declares NCCL 2.29.7, while
 the recipe retains upstream NCCL 2.30.7 for DeepEP v2 GIN. The
 [pinned vLLM Dockerfile](https://github.com/vllm-project/vllm/blob/v0.30.0/docker/Dockerfile)
