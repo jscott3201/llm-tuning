@@ -1,0 +1,25 @@
+[project]
+name = "glimmer-modal-serving"
+version = "0.1.0"
+description = "Meta Muse Glimmer 30B (NVIDIA NVFP4 checkpoint) on Modal Blackwell GPUs via SGLang, in solo and concurrent shapes, with DFlash speculative decoding, image input, and a harness-friendly chat-template fork. Served over Modal's public *.modal.run web endpoint."
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [{ name = "jscott3201" }]
+
+# Local control-plane tools only. You `modal deploy` the serve scripts and hit
+# the public *.modal.run URL from any client. The container image carries
+# SGLang, torch, and CUDA, so none of that is listed here.
+dependencies = [
+    "modal>=1.4,<2",
+    "openai>=1.50",  # bench/benchmark.py, bench/smoke_test.py
+]
+
+[dependency-groups]
+# Chat-template conformance + serve-config tests in tests/. No GPU, no SGLang.
+dev = [
+    "pytest>=8",
+    "jinja2>=3",
+]
+
+[tool.uv]
+package = false
