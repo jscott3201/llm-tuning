@@ -1,6 +1,6 @@
 # llm-tuning
 
-Serving and fine-tuning code for the Google Gemma 4 and Qwen3.6 model families,
+Serving and fine-tuning code for the Google Gemma 4, Qwen3.6 and Meta Muse Glimmer models,
 built around solo and concurrent agentic-coding workloads. Everything here runs
 on [Modal](https://modal.com) out of the box, but the serving layer is a thin
 wrapper over [SGLang](https://github.com/sgl-project/sglang) and
@@ -13,7 +13,7 @@ the code.
 
 ## What's in here
 
-The repo is three self-contained projects. Each has its own `_common/` library,
+The repo is four self-contained projects. Each has its own `_common/` library,
 its own `pyproject.toml`, and its own deployments. Work from inside the one you
 need.
 
@@ -21,6 +21,7 @@ need.
 |---|---|---|
 | [`gemma4/`](gemma4/) | Serve the Gemma 4 family (E2B, E4B, 12B, 26B-A4B, 31B), solo and concurrent, plus a Granite embedding sidecar | SGLang |
 | [`qwen/`](qwen/) | Serve Qwen3.6-27B and Qwen3.6-35B-A3B, solo and concurrent, plus a Granite embedding sidecar | SGLang |
+| [`glimmer/`](glimmer/) | Serve Muse Glimmer 30B from NVIDIA's NVFP4 checkpoint on Blackwell (RTX PRO 6000 or B200), solo and concurrent, with DFlash speculative decoding and image input | SGLang |
 | [`pipeline/`](pipeline/) | The research path: serve → score → generate a synthetic corpus → LoRA fine-tune, over the public Chinook SQL agent | vLLM |
 
 Each model ships two shapes:
@@ -41,8 +42,9 @@ Each model ships two shapes:
 | Gemma 4 31B-it | `google/gemma-4-31B-it` | Dense, 31B | 256K | yes (0.5B) |
 | Qwen3.6-27B | `Qwen/Qwen3.6-27B` | Dense hybrid | 256K | architectural |
 | Qwen3.6-35B-A3B | `Qwen/Qwen3.6-35B-A3B` | MoE hybrid, 35B/3B active | 256K | architectural |
+| Muse Glimmer 30B (NVFP4) | `nvidia/Muse-Glimmer-30B-NVFP4` | Dense + 1.8B vision encoder, sliding/global attention | 128K | DFlash (`meta-models/Muse-Glimmer-30B-assistant`) |
 
-All Gemma 4 and Qwen3.6 weights are Apache-2.0 and ungated, so no Hugging Face
+All Gemma 4, Qwen3.6 and Muse Glimmer weights are Apache-2.0 and ungated, so no Hugging Face
 token is needed to pull them.
 
 ## Quick start (Modal)
@@ -51,7 +53,7 @@ You need [uv](https://docs.astral.sh/uv/) and a Modal account. Pick a project an
 work from inside it.
 
 ```bash
-cd gemma4                      # or qwen, or pipeline
+cd gemma4                      # or qwen, glimmer, or pipeline
 uv sync                        # installs the local control plane (modal, openai)
 uv run modal token new         # one-time Modal auth
 
@@ -82,6 +84,9 @@ conformance suite, and a live probe you can point at your own endpoint.
 - Qwen3.6: [`qwen/chat_templates/`](qwen/chat_templates/) — the Q1–Q8 fork.
   See [README](qwen/chat_templates/README.md) and
   [TESTING](qwen/chat_templates/TESTING.md).
+- Muse Glimmer: [`glimmer/chat_templates/`](glimmer/chat_templates/) — one
+  gated patch mapping OpenAI's `reasoning_effort` onto Glimmer's reasoning
+  strength. See the [glimmer README](glimmer/README.md#chat-template).
 
 The forks fix edge cases that bite agentic coding harnesses (opencode, pi, and
 similar): tool arguments arriving as JSON strings, reasoning getting dropped
@@ -120,18 +125,19 @@ The serve scripts are Modal wrappers around `python -m sglang.launch_server` and
 ## License
 
 Apache 2.0. See [LICENSE](LICENSE). The model weights carry their own licenses
-(Apache-2.0 for the Gemma 4 and Qwen3.6 checkpoints used here).
+(Apache-2.0 for the Gemma 4, Qwen3.6 and Muse Glimmer checkpoints used here).
 
 ## Attributions
 
 This repository builds on the following projects and research — full credit to
 their authors and maintainers:
 
-- **[SGLang](https://github.com/sgl-project/sglang)** — the serving engine behind `gemma4/` and `qwen/`.
+- **[SGLang](https://github.com/sgl-project/sglang)** — the serving engine behind `gemma4/`, `qwen/` and `glimmer/`.
 - **[vLLM](https://github.com/vllm-project/vllm)** — the serving engine behind `pipeline/`.
 - **[Modal](https://modal.com)** — the deployment substrate every project runs on.
 - **[Google Gemma](https://ai.google.dev/gemma)** — the Gemma 4 model family (Apache-2.0).
 - **[Qwen](https://github.com/QwenLM/Qwen3)** — the Qwen3.6 model family (Apache-2.0).
+- **Meta [Muse Glimmer](https://huggingface.co/meta-models/Muse-Glimmer-30B)** and its DFlash drafter (Apache-2.0), with **NVIDIA [Model Optimizer](https://github.com/NVIDIA/Model-Optimizer)**'s NVFP4 checkpoint (Apache-2.0).
 - **DeepSeek [DeepSpec](https://github.com/deepseek-ai/DeepSpec)** (MIT) and its DSpark drafter — `spec_decode/` is a reference harness for the released checkpoint [`deepseek-ai/dspark_gemma4_12b_block7`](https://huggingface.co/deepseek-ai/dspark_gemma4_12b_block7).
 - **[Chinook](https://github.com/lerocha/chinook-database)** — the public SQL database used as the `pipeline/` fine-tuning task.
 

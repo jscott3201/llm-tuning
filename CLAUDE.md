@@ -10,9 +10,9 @@ code, comments, docs, or test fixtures. App names, volume names, and secret
 names are generic on purpose so anyone can deploy on their own account. If you
 port code from elsewhere, scrub it.
 
-## Three independent projects
+## Four independent projects
 
-`gemma4/`, `qwen/`, and `pipeline/` are separate uv projects. `uv`, `modal`, and
+`gemma4/`, `qwen/`, `glimmer/`, and `pipeline/` are separate uv projects. `uv`, `modal`, and
 `pytest` all run per-project — there is no tooling at the repo root. `cd` into
 the project before running anything.
 
@@ -20,6 +20,7 @@ the project before running anything.
 |---|---|
 | `gemma4/` | SGLang serving for the Gemma 4 family, solo + concurrent |
 | `qwen/` | SGLang serving for Qwen3.6-27B and 35B-A3B, solo + concurrent |
+| `glimmer/` | SGLang serving for Muse Glimmer 30B NVFP4 (RTX PRO 6000 / B200), solo + concurrent |
 | `pipeline/` | vLLM serve → eval → corpus → SFT, over the Chinook SQL agent |
 
 ## The `_common` skeleton
@@ -85,12 +86,27 @@ way.
 - The 12B has no published MTP drafter, so it serves without speculative decoding
   (`draft=None`, `MTP_OFF`).
 
+## Muse Glimmer gotchas
+
+- NVFP4 needs Blackwell. Tested GPU classes are `RTX-PRO-6000` (default, best
+  tokens per dollar) and `B200`; per-GPU knobs live in `GPU_PROFILES`. Never
+  `B200+`: it can land on a B300 (CUDA 13.1+) and the pinned image is cu130.
+- Don't set `PYTORCH_CUDA_ALLOC_CONF=expandable_segments` in the glimmer image —
+  torch_memory_saver (the snapshot path) refuses to start with it.
+- SGLang 0.5.2x needs a JSON body (`{}`) on `/release_memory_occupation` and
+  `/resume_memory_occupation`, and renamed `--cuda-graph-bs` to
+  `--cuda-graph-bs-decode`.
+- Reasoning strength is the template variable `reasoning_strength`; the fork
+  also maps OpenAI's `reasoning_effort`. Keep the fork byte-identical to
+  upstream when `reasoning_effort` is unset.
+
 ## Testing
 
 ```bash
 # Chat-template conformance (no GPU, renders Jinja locally):
 cd gemma4 && uv run --group dev pytest tests/ -v        # 20 tests
 cd qwen   && uv run --group dev pytest tests/ -v        # 39 tests
+cd glimmer && uv run --group dev pytest tests/ -v      # 44 tests
 
 # Pipeline eval rubric unit tests:
 cd pipeline && uv run --group dev pytest eval/test_eval_scoring.py -v
@@ -98,7 +114,7 @@ cd pipeline && uv run --group dev pytest eval/test_eval_scoring.py -v
 
 ## Where to read next
 
-- `gemma4/README.md`, `qwen/README.md`, `pipeline/README.md` — per-project guides.
+- `gemma4/README.md`, `qwen/README.md`, `glimmer/README.md`, `pipeline/README.md` — per-project guides.
 - `gemma4/chat_templates/TESTING.md` — how the template fork is tested.
 - `docs/securing-endpoints.md` — auth options for the public endpoint.
 - `docs/deploy-byo-cloud.md` — running off Modal.
